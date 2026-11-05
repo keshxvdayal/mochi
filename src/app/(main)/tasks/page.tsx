@@ -6,7 +6,7 @@ import { today } from "@/lib/store";
 
 export default async function TasksPage() {
   const db = await pageDb();
-  const t = today();
+  const t = today(db.timezone);
   const days = lastDays(t, 7);
   const habits = db.habits.map((h) => ({ id: h.id, title: h.title, emoji: h.emoji, week: days.map((d) => ({ date: d, done: h.log.includes(d) })), streak: habitStreak(h.log, t), doneToday: h.log.includes(t) }));
   return (

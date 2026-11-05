@@ -9,7 +9,7 @@ export default async function MainLayout({ children }: { children: React.ReactNo
   if (!db.onboarded) redirect("/welcome");
   const lv = levelFor(db.xp);
   return (
-    <Shell name={db.companion.name} level={lv.level} pct={lv.pct} streak={streak(db.tasks, db.checkins, today())}>
+    <Shell name={db.companion.name} level={lv.level} pct={lv.pct} streak={streak(db.tasks, db.checkins, today(db.timezone))} timezone={db.timezone}>
       {children}
     </Shell>
   );

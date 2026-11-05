@@ -9,6 +9,7 @@ import { Companion } from "@/components/companion/companion";
 import { RichText } from "@/components/rich-text";
 import { live, setMood, setThinking, useCompanion } from "@/lib/companion-state";
 import type { QuickAction } from "@/lib/personal";
+import { toSignIn } from "@/lib/client-api";
 import { canListen, enqueueSpeech, flushSpeech, listen, speak, stopSpeaking, takeSentences, unlockAudio, type VoiceOpts } from "@/lib/speech";
 import type { Accessory, Artifact, BodyColor, ChatMessage, EyeColor, Mood } from "@/lib/types";
 
@@ -115,6 +116,7 @@ export function Home(props: {
     let full = "";
     try {
       const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      if (res.status === 401) return toSignIn();
       if (!res.ok || !res.body) {
         const error = ((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Something went wrong.";
         patchLast((m) => ({ ...m, streaming: false, error }));

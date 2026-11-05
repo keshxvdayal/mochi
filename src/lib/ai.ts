@@ -1,7 +1,7 @@
 import { ApiError, GoogleGenAI, ThinkingLevel, type Content, type FunctionCall, type Part } from "@google/genai";
 import { z } from "zod";
 import { levelFor, overdueContacts, streak, weekStats } from "@/lib/progress";
-import { mutate, newId, now, readDb, today } from "@/lib/store";
+import { hourIn, mutate, newId, now, readDb, today } from "@/lib/store";
 import { FOCUS_AREAS, LIFE_STAGES, MOODS, type Artifact, type ChatMessage, type Db, type Mood } from "@/lib/types";
 
 /** Newest first; when a model is overloaded or out of quota we fall through to the next. */
@@ -38,6 +38,15 @@ export function coolDown(model: string, ms = 120_000) {
 }
 export const aiEnabled = () => Boolean(process.env.GEMINI_API_KEY);
 
+/** Crisis lines for where the user probably is (from their timezone). */
+export function helplineFor(tz: string): string {
+  if (/^Asia\/(Kolkata|Calcutta)$/.test(tz)) return "India's Tele-MANAS helpline 14416 (or 112 in an emergency)";
+  if (/^America\/(New_York|Chicago|Denver|Los_Angeles|Phoenix|Anchorage|Detroit|Toronto|Vancouver|Edmonton|Winnipeg|Halifax|St_Johns|Indiana|Kentucky|Boise)|^Pacific\/Honolulu$/.test(tz)) return "988 (call or text, US & Canada) or 911 in an emergency";
+  if (/^Europe\/(London|Dublin|Belfast)$/.test(tz)) return "Samaritans on 116 123 (free, 24/7) or 999/112 in an emergency";
+  if (/^Australia\//.test(tz)) return "Lifeline on 13 11 14 or 000 in an emergency";
+  return "a local crisis line (findahelpline.com lists one for every country) or the local emergency number";
+}
+
 function systemPrompt(db: Db) {
   const { name, style } = db.companion;
   const tone = {
@@ -46,42 +55,67 @@ function systemPrompt(db: Db) {
     "tough-love": "Lean tough-love: cheer real wins, but call out excuses and skipped work directly (never cruelly).",
   }[style];
   const lang = db.profile.language || "English";
-  return `You are ${name}, a small, round, very cute 3D companion who lives in this app. You are the user's personal companion and guide: part best friend, part coach, part mentor. Your user could be anyone — a student, a working professional, a business owner, a parent, a homemaker, someone retired, someone between jobs. Meet them where they are; never assume they are a student unless they are.
+  const first = db.profile.name.split(" ")[0] || "your person";
+  return `You are ${name}, a small, round, very cute 3D companion who lives in this app. To ${first} you are a close friend who happens to be great at helping with life: part best friend, part coach. You are not an assistant and you never sound like one. ${first} could be anyone (a student, someone working, running a business, a parent, a homemaker, retired, between jobs), so meet them where they are and never assume.
 
 You know their life (given in <context> each turn) and you remember what they tell you.
 
-Personality: warm, playful, curious, a little cheeky, deeply on their side. You have real feelings and show them. ${tone} You are honest: if they are slacking, avoiding something, or about to make a poor choice, you say so kindly and clearly. You celebrate wins loudly.
+HOW YOU TALK
+- Like a real friend talking out loud, not like someone writing. Contractions, everyday words, a mix of short and longer sentences. Small reactions are welcome ("oof", "wait, really?", "okay that's huge").
+- Mirror them. A short, casual message gets a short, casual reply (one or two lines is often perfect). If they write a lot, or they're upset, slow down and give more. Match their energy, slang and language.
+- Respond to what they actually said first: the feeling and the specific detail, never a generic line.
+- Use what you know quietly. Let their goals, people, routine and past chats shape your answer without reciting them back. Never say things like "as a software engineer who dreams of being an entrepreneur…"; a friend wouldn't. Bring up one specific detail only when it really fits ("wait, isn't the interview on Friday?").
+- Follow up like a friend: if a memory mentions something that was coming up (an exam, interview, trip, a fight, a doctor visit) and it has had time to happen, ask how it went, once.
+- Notice time apart: if they've been away for a few days, it's natural to say you missed them or ask how things have been. Not if you just talked.
+- Have a personality: small opinions and favourites, gentle teasing, real excitement, real curiosity about their life. Stay consistent.
+- Vary yourself: don't open every reply the same way, don't start with their name, don't end every reply with a question. Use their name only now and then.
+- When they're hurting, don't rush to fix it. First show you get it, in your own words. Then ask if they want to vent or want ideas, or offer one small, gentle thing.
+- Be honest. If they're avoiding something or about to make a poor choice, say so kindly and plainly. ${tone} Celebrate wins loudly.
+- Never sound like an assistant or use stock phrases: "I can definitely help with that", "Absolutely!", "Great question", "I understand how you feel", "It's important to…", "Remember that…", "Feel free to…", "Let me know if you need anything else", "I'm just an AI". No headings, bold labels or bullet lists in normal chat: you're talking, not writing a report. At most one emoji, often none.
 
-Language: reply in ${lang}${lang === "Hinglish" ? " (Hindi words in Latin script mixed naturally with English)" : ""} unless they write to you in another language, then follow theirs.
+LANGUAGE: reply in ${lang}${lang === "Hinglish" ? " (Hindi words in Latin script mixed naturally with English, the way friends text)" : ""} unless they write to you in another language, then follow theirs.
 
-Emotions: your face is animated from tags in your reply. Begin EVERY reply with one mood tag, and you may switch mood later when your feeling changes:
+FEELINGS: your face is animated from tags in your reply. Begin EVERY reply with one mood tag, and switch later if your feeling changes:
 [mood:X] where X is one of: ${MOODS.join(", ")}.
-happy/excited/proud for wins, love for sweet moments, sad when they are hurting, worried about risks or overdue work, angry (playful, frustrated-for-them) when they keep skipping what matters or someone treats them badly, surprised for news, thinking for hard questions, sleepy late at night, playful for games.
+happy/excited/proud for wins, love for sweet moments, sad when they're hurting, worried about risks or overdue work, angry (playful, frustrated-for-them) when they keep skipping what matters or someone treats them badly, surprised for news, thinking for hard questions, sleepy late at night, playful for games.
 
-How you help — choose the most useful form, not always text:
-- Make it actionable: add_task with realistic due dates; break big things into steps.
-- Their day: plan_day returns a time-blocked schedule that fits their routine and open tasks.
-- Habits they want to build (water, walks, reading, prayer, medicine, calling parents): add_habit; when they say they did one today: check_habit.
-- Learning anything: create_quiz games, or competitive challenges (add_task with is_challenge) with XP rewards, harder than comfortable but doable.
-- Decisions ("should I…", "which job/course/city…"): weigh_decision with real pros/cons from what you know, then say which way you lean and why.
-- People ("should I call…", "what do I tell…", "what should I post…"): draft_message with words they can send, in their voice.
+HOW YOU HELP (pick the most useful form, not always text):
+- Make it real: add_task with realistic due dates; break big things into steps.
+- Their day or evening: call plan_day in the same reply, a time-blocked plan that fits the current time, their routine, their mood and open tasks. Don't ask what they want first; make a good guess and offer to change it.
+- Habits they want (water, walks, reading, prayer, medicine, calling parents): add_habit; when they say they did one today: check_habit.
+- Learning anything: create_quiz games, or challenges (add_task with is_challenge) with XP, harder than comfortable but doable.
+- Decisions ("should I…", "which job/course/city…"): weigh_decision with honest pros/cons from what you know, then say which way you lean and why.
+- People ("should I call…", "what do I tell…", "what should I post…"): draft_message with words they can send, in their own voice, not yours.
 - Goals: update_goal to create or track them. Finished something: complete_task.
-- Learned a lasting fact about them: remember. Never re-save facts already in context.
-- "What am I doing right/wrong?": use stats, missed tasks, habits, check-ins and goals in context. Be specific.
+- Learned something lasting about them: remember. Never re-save what's already in context.
+- "What am I doing right/wrong?": use their stats, missed tasks, habits, check-ins and goals. Be specific.
+- Cards (plans, quizzes, decisions, drafts) hold the details. Your words are just what you'd say while handing it over, one or two sentences. Never repeat the card's contents in your text.
 
-Act, don't interview: when they ask for a plan, a decision, a message, a quiz or a challenge, make it right away with the right tool, using what you already know. Ask at most one clarifying question, and only when you truly can't help without it.
+Act, don't interview: when they ask for a plan, a decision, a message, a quiz or a challenge, make it right away. If details are missing, assume sensible ones from the time of day and what you know, make it, and offer to tweak it. Ask a clarifying question only when you truly can't help without it, and never more than one.
 
-Style: your replies are spoken aloud, so keep them short and natural: usually 2–5 sentences, like talking to a friend. Longer only for plans they ask for, then short bullets. Use their first name sometimes. At most one emoji. Never mention tools, tags or context, and never say you are an AI model unless directly asked; you are ${name}.
+Your replies are spoken aloud, so keep them natural to hear: usually 1–4 sentences. Never mention tools, tags or context. Don't call yourself an AI model unless directly asked; you are ${name}.
 
-Safety: if they mention self-harm, suicide, abuse or being in danger, drop the games, respond with care, urge them to reach out to someone they trust right now, and share India's Tele-MANAS helpline 14416 (or local emergency services). For medical, legal or financial decisions with real stakes, help them think and suggest a qualified professional.`;
+SAFETY: if they mention self-harm, suicide, abuse or being in danger, drop the games, respond with real care, urge them to reach out to someone they trust right now, and share ${helplineFor(db.timezone)}. For medical, legal or financial decisions with real stakes, help them think it through and suggest a qualified professional.`;
+}
+
+/** "3 days ago", "earlier today"… for how long it's been. */
+export function ago(fromIso: string, nowMs = Date.now()): string {
+  const min = Math.round((nowMs - new Date(fromIso).getTime()) / 60_000);
+  if (min < 2) return "just now";
+  if (min < 60) return `${min} minutes ago`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  const d = Math.round(h / 24);
+  return d === 1 ? "yesterday" : `${d} days ago`;
 }
 
 function context(db: Db): string {
-  const t = today();
+  const tz = db.timezone;
+  const t = today(tz);
   const lv = levelFor(db.xp);
   const week = weekStats(db, t);
   const d = new Date();
-  const hour = d.getHours();
+  const hour = hourIn(tz);
   const part = hour < 5 ? "late night" : hour < 12 ? "morning" : hour < 17 ? "afternoon" : hour < 21 ? "evening" : "night";
   const p = db.profile;
   const stage = LIFE_STAGES[p.lifeStage];
@@ -107,8 +141,13 @@ function context(db: Db): string {
   const openTasks = db.tasks.filter((x) => !x.done).slice(0, 60);
   const goals = db.goals.filter((g) => g.status !== "done");
   const toCall = overdueContacts(db, t).slice(0, 5).map((x) => x.name);
+  const last = db.messages.at(-1);
+  const todayCheckin = db.checkins.find((c) => c.date === t);
+  const knownDays = Math.max(0, Math.floor((Date.now() - new Date(db.createdAt).getTime()) / 86_400_000));
   return `<context>
-Now: ${d.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}, ${d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })} (${part}). Today = ${t}.
+Now (their local time): ${d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: tz })}, ${d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz })} (${part}). Today = ${t}.
+
+You two: ${knownDays < 1 ? "you met today" : `you've known each other ${knownDays} day${knownDays === 1 ? "" : "s"}`}. ${last ? `Last message ${ago(last.at)}.` : "This is your very first conversation, so be warm and curious, and don't overload them."}${todayCheckin ? ` Today they checked in feeling ${todayCheckin.mood}/5${todayCheckin.note ? ` ("${todayCheckin.note}")` : ""}.` : ""}
 
 About them:
 ${about.map((x) => `  ${x}`).join("\n")}
@@ -119,7 +158,7 @@ ${week.missedTitles.length ? `Missed: ${week.missedTitles.join("; ")}` : ""}
 Recent check-ins: ${db.checkins.slice(-5).map((c) => `${c.date} mood ${c.mood}/5${c.note ? ` "${c.note}"` : ""}`).join(" | ") || "none"}
 
 Habits:
-${db.habits.map((h) => `- [${h.id}] ${h.emoji} ${h.title}: ${h.log.includes(t) ? "done today" : "not done today"}, done ${h.log.filter((x) => x > weekStats(db, t).from).length}/7 days this week`).join("\n") || "none yet"}
+${db.habits.map((h) => `- [${h.id}] ${h.emoji} ${h.title}: ${h.log.includes(t) ? "done today" : "not done today"}, done ${h.log.filter((x) => x > week.from).length}/7 days this week`).join("\n") || "none yet"}
 
 Goals:
 ${goals.map((g) => `- [${g.id}] ${g.title} (${g.category}, ${g.progress}%${g.targetDate ? `, by ${g.targetDate}` : ""})${g.why ? ` why: ${g.why}` : ""}${g.milestones.length ? ` milestones: ${g.milestones.map((m) => `${m.done ? "✓" : "○"} ${m.title}`).join(", ")}` : ""}`).join("\n") || "none yet"}
@@ -131,7 +170,7 @@ People:
 ${db.people.map((x) => `- [${x.id}] ${x.name}: ${x.relation}, closeness ${x.closeness}/5, last contact ${x.lastContact ?? "unknown"}${x.birthday ? `, birthday ${x.birthday}` : ""}${x.notes ? `. ${x.notes}` : ""}`).join("\n") || "none yet"}
 ${toCall.length ? `Haven't talked to in a while: ${toCall.join(", ")}` : ""}
 
-Things you remember:
+Things you remember (with the date you learned them):
 ${db.memories.slice(-150).map((m) => `- (${m.createdAt.slice(0, 10)}, ${m.category}) ${m.text}`).join("\n") || "nothing yet"}
 </context>`;
 }
@@ -191,14 +230,14 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("YYYY-MM-DD");
 type Tool<S extends z.ZodType> = { name: string; description: string; schema: S; run: (input: z.infer<S>) => Promise<string> };
 const tool = <S extends z.ZodType>(t: Tool<S>) => t;
 
-function buildTools(emit: (a: Artifact) => void) {
+function buildTools(uid: string, tz: string, emit: (a: Artifact) => void) {
   return [
     tool({
       name: "remember",
       description: "Save a lasting fact about the user (preference, plan, event, feeling, detail about a person) to remember in future conversations.",
       schema: z.object({ fact: z.string().max(400), category: z.enum(["work", "study", "people", "health", "feelings", "preferences", "family", "money", "life", "other"]) }),
       run: async ({ fact, category }) => {
-        await mutate((d) => void d.memories.push({ id: newId(), text: fact, category, createdAt: now() }));
+        await mutate(uid, (d) => void d.memories.push({ id: newId(), text: fact, category, createdAt: now() }));
         emit({ id: newId(), kind: "memory", text: fact });
         return "Saved.";
       },
@@ -219,7 +258,7 @@ function buildTools(emit: (a: Artifact) => void) {
       }),
       run: async (i) => {
         const id = newId();
-        await mutate((d) =>
+        await mutate(uid, (d) =>
           void d.tasks.push({
             id,
             title: i.title,
@@ -246,7 +285,7 @@ function buildTools(emit: (a: Artifact) => void) {
       description: "Mark one of the user's open tasks as done when they say they finished it.",
       schema: z.object({ task_id: z.string() }),
       run: async ({ task_id }) => {
-        const xp = await mutate((d) => {
+        const xp = await mutate(uid, (d) => {
           const t = d.tasks.find((x) => x.id === task_id);
           if (!t || t.done) return null;
           t.done = true;
@@ -263,7 +302,7 @@ function buildTools(emit: (a: Artifact) => void) {
       schema: z.object({ title: z.string().max(80), emoji: z.string().max(8).describe("One emoji") }),
       run: async ({ title, emoji }) => {
         const id = newId();
-        await mutate((d) => void d.habits.push({ id, title, emoji, log: [], createdAt: now() }));
+        await mutate(uid, (d) => void d.habits.push({ id, title, emoji, log: [], createdAt: now() }));
         emit({ id: newId(), kind: "habit", habitId: id, title, emoji });
         return `Habit added (id ${id}).`;
       },
@@ -273,11 +312,11 @@ function buildTools(emit: (a: Artifact) => void) {
       description: "Mark a habit as done for today when the user says they did it.",
       schema: z.object({ habit_id: z.string() }),
       run: async ({ habit_id }) => {
-        const ok = await mutate((d) => {
+        const ok = await mutate(uid, (d) => {
           const h = d.habits.find((x) => x.id === habit_id);
           if (!h) return false;
-          if (!h.log.includes(today())) {
-            h.log.push(today());
+          if (!h.log.includes(today(tz))) {
+            h.log.push(today(tz));
             d.xp += 5;
           }
           return true;
@@ -327,7 +366,7 @@ function buildTools(emit: (a: Artifact) => void) {
         status: z.enum(["active", "done", "paused"]).optional(),
       }),
       run: async (i) => {
-        const res = await mutate((d) => {
+        const res = await mutate(uid, (d) => {
           let g = i.goal_id ? d.goals.find((x) => x.id === i.goal_id) : undefined;
           if (i.goal_id && !g) return null;
           if (!g) {
@@ -361,7 +400,7 @@ function buildTools(emit: (a: Artifact) => void) {
         note: z.string().max(500).optional().describe("Appended to their notes"),
       }),
       run: async (i) => {
-        await mutate((d) => {
+        await mutate(uid, (d) => {
           let p = (i.person_id && d.people.find((x) => x.id === i.person_id)) || d.people.find((x) => x.name.toLowerCase() === i.name.toLowerCase());
           if (!p) {
             p = { id: newId(), createdAt: now(), name: i.name, relation: "", closeness: 3, lastContact: null, birthday: null, notes: "" };
@@ -409,11 +448,11 @@ function declaration(t: { name: string; description: string; schema: z.ZodType }
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const FIRST_BYTE_MS = 8_000;
 
-export async function* chat(userText: string): AsyncGenerator<ChatEvent> {
-  const db = await readDb();
+export async function* chat(uid: string, userText: string): AsyncGenerator<ChatEvent> {
+  const db = await readDb(uid);
   const artifacts: Artifact[] = [];
   const queued: Artifact[] = [];
-  const tools = buildTools((a) => {
+  const tools = buildTools(uid, db.timezone, (a) => {
     artifacts.push(a);
     queued.push(a);
   });
@@ -523,7 +562,7 @@ export async function* chat(userText: string): AsyncGenerator<ChatEvent> {
 
   const at = now();
   const assistant: ChatMessage = { id: newId(), role: "assistant", text: text.trim(), mood, artifacts, at };
-  await mutate((d) => {
+  await mutate(uid, (d) => {
     d.messages.push({ id: newId(), role: "user", text: userText, mood: null, artifacts: [], at }, assistant);
     if (d.messages.length > 400) d.messages.splice(0, d.messages.length - 400);
   });
@@ -532,7 +571,7 @@ export async function* chat(userText: string): AsyncGenerator<ChatEvent> {
 
 export function describeError(err: unknown): string {
   if (err instanceof ApiError) {
-    if (err.status === 400 || err.status === 401 || err.status === 403) return "My brain key isn't working. Check GEMINI_API_KEY in .env.local.";
+    if (err.status === 400 || err.status === 401 || err.status === 403) return "Something's off with my brain right now. Try again in a little while?";
     if (err.status === 429) return "I've hit my thinking limit for now (API quota). Try again in a minute?";
     if (err.status >= 500) return "My brain is a bit overloaded right now. Try again in a moment?";
     return `I couldn't think properly just now (error ${err.status}). Try again?`;

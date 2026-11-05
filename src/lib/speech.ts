@@ -273,7 +273,7 @@ export function listen(onText: (text: string, final: boolean) => void): () => vo
   if (!Ctor) return () => {};
   stopSpeaking();
   const rec = new Ctor();
-  rec.lang = "en-IN";
+  rec.lang = navigator.language || "en-US";
   rec.interimResults = true;
   rec.continuous = false;
   rec.onresult = (e) => {

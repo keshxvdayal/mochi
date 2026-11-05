@@ -1,18 +1,19 @@
-import { randomBytes, randomUUID } from "crypto";
-import { promises as fs } from "fs";
-import path from "path";
+import { randomUUID } from "crypto";
+import { kv } from "@/lib/kv";
 import { defaultCompanion, emptyProfile, type Db, type Profile } from "@/lib/types";
 
 /**
- * Personal, single-user store: ./data/db.json. Writes are serialized, so
- * concurrent requests can't clobber each other. Everything stays on this machine.
+ * Each account has its own document (`db:<userId>`). Writes are
+ * compare-and-set with a few retries, so two requests from the same person
+ * (say, ticking a habit while a chat reply is saving) never lose each other's changes.
  */
-const DATA_DIR = process.env.MOCHI_DATA_DIR ?? path.join(process.cwd(), "data");
-const DB_FILE = path.join(DATA_DIR, "db.json");
+const key = (userId: string) => `db:${userId}`;
 
 export const emptyDb = (): Db => ({
   version: 1,
   onboarded: false,
+  timezone: "UTC",
+  createdAt: new Date().toISOString(),
   profile: emptyProfile(),
   companion: defaultCompanion(),
   xp: 0,
@@ -35,37 +36,41 @@ export function migrateProfile(p: Profile & { college?: string; course?: string;
   return rest;
 }
 
-let queue: Promise<unknown> = Promise.resolve();
-
-export async function readDb(): Promise<Db> {
-  try {
-    const db = JSON.parse(await fs.readFile(DB_FILE, "utf8")) as Db;
-    const base = emptyDb();
-    return { ...base, ...db, profile: migrateProfile({ ...base.profile, ...db.profile }), companion: { ...base.companion, ...db.companion } };
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyDb();
-    throw err;
-  }
+function normalize(db: Partial<Db> | null): Db {
+  const base = emptyDb();
+  if (!db) return base;
+  return { ...base, ...db, profile: migrateProfile({ ...base.profile, ...db.profile }), companion: { ...base.companion, ...db.companion } };
 }
 
-async function writeDb(db: Db) {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  const tmp = `${DB_FILE}.${randomBytes(4).toString("hex")}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(db, null, 1));
-  await fs.rename(tmp, DB_FILE);
+export async function readDb(userId: string): Promise<Db> {
+  return normalize((await kv().getDoc<Db>(key(userId))).value);
 }
 
-export function mutate<T>(fn: (db: Db) => T | Promise<T>): Promise<T> {
-  const run = queue.then(async () => {
-    const db = await readDb();
+export async function mutate<T>(userId: string, fn: (db: Db) => T | Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const doc = await kv().getDoc<Db>(key(userId));
+    const db = normalize(doc.value);
     const result = await fn(db);
-    await writeDb(db);
-    return result;
-  });
-  queue = run.catch(() => {});
-  return run;
+    if (await kv().putDoc(key(userId), db, doc.rev)) return result;
+    await new Promise((r) => setTimeout(r, 30 + Math.random() * 80 * (attempt + 1)));
+  }
+  throw new Error("Too many simultaneous changes. Try again.");
 }
 
 export const newId = () => randomUUID().replaceAll("-", "").slice(0, 10);
 export const now = () => new Date().toISOString();
-export const today = () => new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in local time
+
+/** A timezone we can safely pass to Intl, or UTC. */
+export function safeTz(tz: string | null | undefined): string {
+  if (!tz) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: tz });
+    return tz;
+  } catch {
+    return "UTC";
+  }
+}
+/** YYYY-MM-DD in the user's timezone (servers run in UTC, people don't). */
+export const today = (tz?: string) => new Date().toLocaleDateString("en-CA", { timeZone: safeTz(tz) });
+/** 0–23 in the user's timezone. */
+export const hourIn = (tz?: string) => Number(new Date().toLocaleString("en-GB", { hour: "2-digit", hourCycle: "h23", timeZone: safeTz(tz) }));

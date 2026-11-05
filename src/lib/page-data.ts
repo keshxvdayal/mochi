@@ -1,8 +1,9 @@
 import { connection } from "next/server";
 import { readDb } from "@/lib/store";
+import { requireUserId } from "@/lib/session";
 
-/** Read the data for a page at request time (never at build time: it's your live data). */
+/** The signed-in person's data for a page, read at request time. Signed out → /signin. */
 export async function pageDb() {
   await connection();
-  return readDb();
+  return readDb(await requireUserId());
 }

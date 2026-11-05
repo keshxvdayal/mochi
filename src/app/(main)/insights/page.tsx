@@ -9,7 +9,7 @@ const MOOD_EMOJI = ["", "😢", "😕", "😐", "🙂", "🤩"];
 
 export default async function InsightsPage() {
   const db = await pageDb();
-  const t = today();
+  const t = today(db.timezone);
   const w = weekStats(db, t);
   const lv = levelFor(db.xp);
   const s = streak(db.tasks, db.checkins, t);

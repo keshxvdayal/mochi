@@ -70,7 +70,7 @@ export function Onboarding({ companion: initialC, profile: initialP }: { compani
 
   async function finish() {
     setBusy(true);
-    await api("/api/profile", "PUT", { profile: p, companion: c, onboarded: true });
+    await api("/api/profile", "PUT", { profile: p, companion: c, onboarded: true, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
     setMood("excited");
     router.push("/");
     router.refresh();
@@ -208,7 +208,7 @@ export function Onboarding({ companion: initialC, profile: initialP }: { compani
             </button>
           )}
         </div>
-        <p className="mt-4 text-center text-xs text-muted">Your info stays on this computer. Change anything later in About me.</p>
+        <p className="mt-4 text-center text-xs text-muted">Your info is private to your account. Change anything later in About me.</p>
       </div>
     </div>
   );

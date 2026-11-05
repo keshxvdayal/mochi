@@ -170,6 +170,9 @@ export type ChatMessage = { id: string; role: "user" | "assistant"; text: string
 export type Db = {
   version: 1;
   onboarded: boolean;
+  /** IANA timezone from the user's browser, e.g. "Asia/Kolkata". */
+  timezone: string;
+  createdAt: string;
   profile: Profile;
   companion: CompanionSettings;
   xp: number;

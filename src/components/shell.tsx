@@ -2,8 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Flame, Heart, ListChecks, MessageCircleHeart, Settings2, Sparkles, Target, UserRound } from "lucide-react";
+import { useEffect } from "react";
+import { Flame, Heart, ListChecks, LogOut, MessageCircleHeart, Settings2, Sparkles, Target, UserRound } from "lucide-react";
+import { signOut } from "@/app/(auth)/actions";
 import { Progress } from "@/components/ui";
+import { api } from "@/lib/client-api";
 
 const NAV = [
   { href: "/", label: "Home", icon: MessageCircleHeart },
@@ -14,8 +17,13 @@ const NAV = [
   { href: "/settings", label: "Settings", icon: Settings2 },
 ];
 
-export function Shell({ name, level, pct, streak, children }: { name: string; level: number; pct: number; streak: number; children: React.ReactNode }) {
+export function Shell({ name, level, pct, streak, timezone, children }: { name: string; level: number; pct: number; streak: number; timezone: string; children: React.ReactNode }) {
   const path = usePathname();
+  // Keep "today" right when someone travels: the browser knows their current timezone.
+  useEffect(() => {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz && tz !== timezone) api("/api/profile", "PUT", { timezone: tz }).catch(() => {});
+  }, [timezone]);
   const active = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
   return (
     <div className="min-h-screen pb-24 md:pb-0">
@@ -49,6 +57,11 @@ export function Shell({ name, level, pct, streak, children }: { name: string; le
               </div>
               <Progress value={pct} className="h-2" />
             </div>
+            <form action={signOut}>
+              <button type="submit" title="Sign out" aria-label="Sign out" className="grid h-9 w-9 place-items-center rounded-2xl text-muted transition hover:bg-grape-soft hover:text-grape">
+                <LogOut className="h-4 w-4" />
+              </button>
+            </form>
           </div>
         </div>
       </header>

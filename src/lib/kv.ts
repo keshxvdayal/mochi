@@ -1,11 +1,13 @@
 import { randomBytes } from "crypto";
 import { promises as fs } from "fs";
 import path from "path";
+import postgres from "postgres";
 
 /**
- * A tiny key-value layer with two backends:
- * - Upstash Redis over REST (production, e.g. Vercel → Storage → Upstash), when
- *   KV_REST_API_URL/KV_REST_API_TOKEN or UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN are set.
+ * A tiny key-value layer with three backends, picked from the environment:
+ * - Postgres (e.g. Vercel → Storage → Neon), when DATABASE_URL or POSTGRES_URL is set.
+ * - Upstash Redis over REST, when KV_REST_API_URL/KV_REST_API_TOKEN
+ *   (or UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN) are set.
  * - JSON files under ./data (local development).
  *
  * Values are versioned documents: `getDoc` returns a revision and `putDoc` only
@@ -41,6 +43,14 @@ export function findRestCredentials(env: Record<string, string | undefined> = pr
   return null;
 }
 
+/** A Postgres connection string however Vercel/Neon named it (DATABASE_URL, POSTGRES_URL, or with a prefix). */
+export function findPostgresUrl(env: Record<string, string | undefined> = process.env): string | null {
+  const names = ["DATABASE_URL", "POSTGRES_URL", ...Object.keys(env).filter((k) => /_(DATABASE_URL|POSTGRES_URL)$/.test(k)).sort()];
+  for (const k of names) if (env[k] && /^postgres(ql)?:\/\//.test(env[k]!)) return env[k]!;
+  return null;
+}
+
+const PG_URL = findPostgresUrl();
 const creds = findRestCredentials();
 const REST_URL = creds?.url;
 const REST_TOKEN = creds?.token;
@@ -49,10 +59,10 @@ const DATA_DIR = process.env.MOCHI_DATA_DIR ?? path.join(process.cwd(), "data");
 export const usingRedis = () => Boolean(REST_URL && REST_TOKEN);
 
 function assertWritableBackend() {
-  if (!usingRedis() && process.env.VERCEL) {
-    const seen = Object.keys(process.env).filter((k) => /REDIS|KV_/.test(k));
+  if (!PG_URL && !usingRedis() && process.env.VERCEL) {
+    const seen = Object.keys(process.env).filter((k) => /REDIS|KV_|DATABASE|POSTGRES|PG/.test(k));
     throw new Error(
-      `No database configured. On Vercel, connect Upstash Redis (Storage tab) so KV_REST_API_URL and KV_REST_API_TOKEN are set, then redeploy.${seen.length ? ` Found only: ${seen.join(", ")} (Mochi needs Upstash's REST URL and token).` : ""}`,
+      `No database configured. On Vercel, connect a database in the Storage tab (Neon Postgres or Upstash Redis), then redeploy.${seen.length ? ` Found only: ${seen.join(", ")}.` : ""}`,
     );
   }
 }
@@ -115,6 +125,68 @@ const redisBackend: Backend = {
   incr: (key, ttlSec) => redis<number>(["EVAL", INCR_TTL, 1, key, ttlSec]),
 };
 
+/* ------------------------------- Postgres ------------------------------- */
+
+/** One table holds everything: documents (with a revision for compare-and-set) and expiring counters. */
+export function postgresBackend(url: string): Backend & { close(): Promise<void> } {
+  // prepare: false so it works through Neon's connection pooler (PgBouncer).
+  const sql = postgres(url, { max: 3, idle_timeout: 20, connect_timeout: 10, prepare: false, onnotice: () => {} });
+  let ready: Promise<unknown> | null = null;
+  const init = () =>
+    (ready ??= sql`create table if not exists mochi_kv (
+      key text primary key,
+      value text not null,
+      rev integer not null default 1,
+      expires_at timestamptz
+    )`.catch((err) => {
+      ready = null;
+      throw err;
+    }));
+
+  return {
+    async getDoc<T>(key: string) {
+      await init();
+      const [row] = await sql<{ value: string; rev: number }[]>`select value, rev from mochi_kv where key = ${key} and (expires_at is null or expires_at > now())`;
+      return { value: row ? (JSON.parse(row.value) as T) : null, rev: row?.rev ?? 0 };
+    },
+    async putDoc(key, value, rev) {
+      await init();
+      const json = JSON.stringify(value);
+      const rows =
+        rev === 0
+          ? await sql`insert into mochi_kv (key, value, rev) values (${key}, ${json}, 1) on conflict (key) do nothing returning 1`
+          : await sql`update mochi_kv set value = ${json}, rev = rev + 1 where key = ${key} and rev = ${rev} returning 1`;
+      return rows.length === 1;
+    },
+    async setIfAbsent(key, value) {
+      await init();
+      const rows = await sql`insert into mochi_kv (key, value) values (${key}, ${JSON.stringify(value)}) on conflict (key) do nothing returning 1`;
+      return rows.length === 1;
+    },
+    async get(key) {
+      await init();
+      const [row] = await sql<{ value: string }[]>`select value from mochi_kv where key = ${key} and (expires_at is null or expires_at > now())`;
+      return row ? (JSON.parse(row.value) as string) : null;
+    },
+    async del(key) {
+      await init();
+      await sql`delete from mochi_kv where key = ${key}`;
+    },
+    async incr(key, ttlSec) {
+      await init();
+      if (Math.random() < 0.01) await sql`delete from mochi_kv where expires_at < now()`;
+      const [row] = await sql<{ n: number }[]>`
+        insert into mochi_kv (key, value, expires_at) values (${key}, '1', now() + make_interval(secs => ${ttlSec}))
+        on conflict (key) do update set
+          value = case when mochi_kv.expires_at <= now() then '1' else (mochi_kv.value::int + 1)::text end,
+          expires_at = case when mochi_kv.expires_at <= now() then excluded.expires_at else mochi_kv.expires_at end
+        returning value::int as n`;
+      return row.n;
+    },
+    close: () => sql.end(),
+  };
+}
+
 /* ------------------------------ Local files ----------------------------- */
 
 const fileFor = (key: string) => path.join(DATA_DIR, "kv", `${key.replace(/[^a-zA-Z0-9_.@-]/g, "_")}.json`);
@@ -173,7 +245,16 @@ const fileBackend: Backend = {
     }),
 };
 
+let pgBackend: ReturnType<typeof postgresBackend> | null = null;
+
+/** Closes the database connection (tests and scripts; servers keep it open). */
+export async function closeKv() {
+  await pgBackend?.close();
+  pgBackend = null;
+}
+
 export function kv(): Backend {
   assertWritableBackend();
+  if (PG_URL) return (pgBackend ??= postgresBackend(PG_URL));
   return usingRedis() ? redisBackend : fileBackend;
 }

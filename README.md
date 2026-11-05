@@ -15,7 +15,7 @@ Everyone signs up with an email and password and gets their own companion. The f
 ## Deploy on Vercel
 
 1. Import the repo into Vercel and add `GEMINI_API_KEY` under Settings → Environment Variables.
-2. Storage → Create / Connect → **Upstash (Redis)** → connect it to the project. This adds `KV_REST_API_URL` and `KV_REST_API_TOKEN`.
+2. Storage → Create Database → **Neon (Postgres)** → connect it to the project (Production). This adds `DATABASE_URL`; Mochi creates its table on first use. Upstash Redis works too (`KV_REST_API_URL` / `KV_REST_API_TOKEN`).
 3. Redeploy. Visitors land on the sign-in page and each gets their own account.
 
 Optional: set `AUTH_SECRET` (any long random string) to sign session cookies; otherwise one is generated and kept in the database. `MOCHI_CHAT_LIMIT_PER_HOUR` (default 60) caps messages per person so one account can't use up your Gemini quota.
@@ -44,6 +44,7 @@ In the chat, replies can include cards: quiz games, day plans (timeline), new ta
 
 ```bash
 npm test     # accounts, data isolation, session tampering, concurrent writes, timezones, mood-tag stream parser, levels, streaks, habit streaks, weekly stats, friend reminders, speech splitting, profile migration, personalised quick actions
+TEST_DATABASE_URL=postgres://… npm test   # also runs the Postgres storage tests
 npm run lint
 ```
 
@@ -51,6 +52,6 @@ npm run lint
 
 - Free Gemini keys have small per-minute and per-day quotas, and the natural voice uses a request per spoken chunk. If replies get slow or the voice switches to the browser voice, you've hit a limit; it recovers on its own.
 - **Accounts** (`src/lib/auth.ts`, `src/lib/session.ts`, `src/proxy.ts`): scrypt-hashed passwords, a signed httpOnly session cookie (30 days), sign-in attempts limited to 10 per 15 minutes per email. Every page and API route reads and writes only the signed-in person's data.
-- **Storage** (`src/lib/kv.ts`): Upstash Redis in production, JSON files in `data/` locally. Each account is one document written with compare-and-set, so parallel requests never overwrite each other.
+- **Storage** (`src/lib/kv.ts`): Postgres (Neon) or Upstash Redis in production, JSON files in `data/` locally. Each account is one document written with compare-and-set, so parallel requests never overwrite each other.
 - **Timezones**: "today", greetings, streaks and the companion's sense of time follow each person's own timezone (from their browser), not the server's.
 - It isn't a therapist. If you mention being in danger, it points you to people who can help, using a crisis line for where you are (e.g. India: Tele-MANAS 14416, US/Canada: 988, UK: Samaritans 116 123).

@@ -3,9 +3,13 @@ import { rm } from "node:fs/promises";
 import { after, test } from "node:test";
 import { ago, helplineFor } from "@/lib/ai";
 import { createSessionToken, createUser, findUserByEmail, hashPassword, underLimit, verifyPassword, verifySessionToken } from "@/lib/auth";
+import { closeKv } from "@/lib/kv";
 import { mutate, readDb, safeTz, today } from "@/lib/store";
 
-after(() => rm(process.env.MOCHI_DATA_DIR!, { recursive: true, force: true }));
+after(async () => {
+  await closeKv();
+  await rm(process.env.MOCHI_DATA_DIR!, { recursive: true, force: true });
+});
 
 const email = (tag: string) => `${tag}-${Math.random().toString(36).slice(2)}@example.com`;
 

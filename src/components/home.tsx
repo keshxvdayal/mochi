@@ -3,14 +3,14 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { CalendarCheck, Check, Flame, Mic, MicOff, RotateCcw, Send, Volume2, VolumeX } from "lucide-react";
+import { CalendarCheck, Check, Flame, Mic, RotateCcw, Send, Volume2, VolumeX, X } from "lucide-react";
 import { ArtifactView } from "@/components/artifacts";
 import { Companion } from "@/components/companion/companion";
 import { RichText } from "@/components/rich-text";
 import { live, setMood, setThinking, useCompanion } from "@/lib/companion-state";
 import type { QuickAction } from "@/lib/personal";
 import { toSignIn } from "@/lib/client-api";
-import { canListen, enqueueSpeech, flushSpeech, listen, speak, stopSpeaking, takeSentences, unlockAudio, type VoiceOpts } from "@/lib/speech";
+import { canListen, enqueueSpeech, flushSpeech, speak, speechLang, startDictation, stopSpeaking, takeSentences, unlockAudio, type Dictation, type DictationError, type VoiceOpts } from "@/lib/speech";
 import type { Accessory, Artifact, BodyColor, ChatMessage, EyeColor, Mood } from "@/lib/types";
 
 type Msg = Omit<ChatMessage, "id" | "at"> & { id: string | null; streaming?: boolean; error?: string };
@@ -38,6 +38,7 @@ export function Home(props: {
   accessory: Accessory;
   voice: VoiceOpts;
   userName: string;
+  language: string;
   initialMessages: ChatMessage[];
   greeting: { mood: Mood; text: string };
   checkedIn: boolean;
@@ -57,7 +58,13 @@ export function Home(props: {
   const [voiceOn, setVoiceOn] = useState(voice.voiceOn);
   const [showCheckin, setShowCheckin] = useState(!props.checkedIn);
   const [habits, setHabits] = useState(props.habits);
-  const stopListen = useRef<(() => void) | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [willCancel, setWillCancel] = useState(false);
+  const [recSeconds, setRecSeconds] = useState(0);
+  const [micHint, setMicHint] = useState<string | null>(null);
+  const dictation = useRef<Dictation | null>(null);
+  const pressedAt = useRef(0);
+  const pendingVoice = useRef<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const opts = { ...voice, voiceOn };
   const micSupported = useSyncExternalStore(() => () => {}, canListen, () => false);
@@ -181,17 +188,91 @@ export function Home(props: {
     }
   }
 
-  function toggleMic() {
+  /* ---------------- Hold to talk: press, speak, let go to send ---------------- */
+  const MIC_ERRORS: Record<DictationError, string> = {
+    "no-permission": "Your mic is blocked. Allow microphone access for this site (the icon in the address bar), then try again.",
+    "no-mic": "I can't find a microphone on this device.",
+    network: "Voice typing needs an internet connection. Try again in a moment?",
+    unsupported: "Voice input works in Chrome, Edge and Safari. You can still type to me!",
+    other: "My ears glitched. Try holding the mic again?",
+  };
+
+  function hint(text: string) {
+    setMicHint(text);
+    setTimeout(() => setMicHint((h) => (h === text ? null : h)), 4000);
+  }
+
+  function startTalking() {
+    if (dictation.current) return;
     unlockAudio();
-    if (listening) {
-      stopListen.current?.();
-      return;
-    }
-    stopListen.current = listen((text, final) => {
-      setInput(text);
-      if (final) void send(text);
+    setMicHint(null);
+    if (!micSupported) return hint(MIC_ERRORS.unsupported);
+    pressedAt.current = Date.now();
+    setInput("");
+    setWillCancel(false);
+    setRecSeconds(0);
+    setRecording(true);
+    dictation.current = startDictation({
+      lang: speechLang(props.language),
+      onText: setInput,
+      onError: (e) => {
+        dictation.current?.cancel();
+        dictation.current = null;
+        setRecording(false);
+        setInput("");
+        hint(MIC_ERRORS[e]);
+      },
     });
   }
+
+  async function stopTalking(cancel: boolean) {
+    const d = dictation.current;
+    if (!d) return;
+    dictation.current = null;
+    setRecording(false);
+    setWillCancel(false);
+    const tooShort = Date.now() - pressedAt.current < 400;
+    if (cancel || tooShort) {
+      d.cancel();
+      setInput("");
+      if (tooShort && !cancel) hint("Hold the mic while you talk, then let go to send.");
+      return;
+    }
+    const text = (await d.finish()).trim();
+    if (!text) {
+      setInput("");
+      return hint("I didn't catch that. Try again, maybe a little closer to the mic?");
+    }
+    if (busy) {
+      // Still answering the last message: send this as soon as I'm done.
+      setInput(text);
+      pendingVoice.current = text;
+    } else void send(text);
+  }
+
+  // Send voice messages that arrived while I was still replying.
+  useEffect(() => {
+    if (!busy && pendingVoice.current) {
+      const text = pendingVoice.current;
+      pendingVoice.current = null;
+      void send(text);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+
+  // Recording timer, with a safety stop after a minute.
+  useEffect(() => {
+    if (!recording) return;
+    const t = setInterval(() => setRecSeconds((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, [recording]);
+  useEffect(() => {
+    if (recording && recSeconds >= 60) void stopTalking(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recSeconds, recording]);
+
+  // Leaving the page mid-recording shouldn't leave the mic on.
+  useEffect(() => () => dictation.current?.cancel(), []);
 
   async function checkIn(c: (typeof CHECKIN)[number]) {
     unlockAudio();
@@ -396,6 +477,24 @@ export function Home(props: {
             </div>
           )}
 
+          {(recording || micHint) && (
+            <div className="pop mx-3 -mb-1 flex items-center justify-center gap-2 rounded-2xl px-3 py-1.5 text-[13px] font-bold" aria-live="polite">
+              {recording ? (
+                willCancel ? (
+                  <span className="text-slate-500">Let go to cancel</span>
+                ) : (
+                  <>
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-rose-500" />
+                    <span className="tabular-nums text-rose-600">{Math.floor(recSeconds / 60)}:{String(recSeconds % 60).padStart(2, "0")}</span>
+                    <span className="text-muted">Let go to send · slide away to cancel</span>
+                  </>
+                )
+              ) : (
+                <span className="text-violet-700">{micHint}</span>
+              )}
+            </div>
+          )}
+
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -403,11 +502,43 @@ export function Home(props: {
             }}
             className="m-3 mt-1 flex items-end gap-2 rounded-3xl bg-white p-2 shadow-sm ring-1 ring-line"
           >
-            {micSupported && (
-              <button type="button" onClick={toggleMic} className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl transition ${listening ? "animate-pulse bg-rose-500 text-white" : "bg-violet-50 text-violet-600 hover:bg-violet-100"}`} title="Talk">
-                {listening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              </button>
-            )}
+            <button
+              type="button"
+              aria-label="Hold to talk"
+              title="Hold to talk, let go to send"
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                e.currentTarget.setPointerCapture(e.pointerId);
+                startTalking();
+              }}
+              onPointerMove={(e) => {
+                if (!dictation.current) return;
+                const r = e.currentTarget.getBoundingClientRect();
+                const far = e.clientX < r.left - 60 || e.clientX > r.right + 60 || e.clientY < r.top - 80 || e.clientY > r.bottom + 60;
+                setWillCancel(far);
+              }}
+              onPointerUp={() => void stopTalking(willCancel)}
+              onPointerCancel={() => void stopTalking(true)}
+              onKeyDown={(e) => {
+                if ((e.key === " " || e.key === "Enter") && !e.repeat) {
+                  e.preventDefault();
+                  startTalking();
+                }
+                if (e.key === "Escape") void stopTalking(true);
+              }}
+              onKeyUp={(e) => {
+                if (e.key === " " || e.key === "Enter") void stopTalking(false);
+              }}
+              onContextMenu={(e) => e.preventDefault()}
+              style={{ touchAction: "none", WebkitTouchCallout: "none" }}
+              className={`relative grid h-11 w-11 shrink-0 select-none place-items-center rounded-2xl transition ${
+                recording ? (willCancel ? "scale-110 bg-slate-400 text-white" : "scale-110 bg-rose-500 text-white shadow-[0_0_0_6px_rgba(244,63,94,0.18)]") : "bg-violet-50 text-violet-600 hover:bg-violet-100"
+              }`}
+            >
+              {recording && !willCancel && <span className="absolute inset-0 animate-ping rounded-2xl bg-rose-400/40" />}
+              {recording && willCancel ? <X className="relative h-4 w-4" /> : <Mic className="relative h-4 w-4" />}
+            </button>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -418,7 +549,8 @@ export function Home(props: {
                 }
               }}
               rows={1}
-              placeholder={`Tell ${companionName} anything…`}
+              readOnly={recording}
+              placeholder={recording ? "Listening… let go to send" : `Tell ${companionName} anything…`}
               className="max-h-36 min-h-[44px] flex-1 resize-none bg-transparent px-2 py-2.5 text-[15px] outline-none placeholder:text-muted/60"
             />
             <button disabled={busy || !input.trim()} className="candy grid h-11 w-11 shrink-0 place-items-center rounded-2xl text-white transition active:scale-95 disabled:opacity-40" title="Send">

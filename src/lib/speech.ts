@@ -1,10 +1,11 @@
 "use client";
 
 import { boundary, live, setListening, setSpeaking } from "@/lib/companion-state";
+import { stripStageDirections } from "@/lib/stage-directions";
 
-/** Text for the voice: no markdown, emoji, mood tags or links. */
+/** Text for the voice: no markdown, emoji, mood tags, links or stage directions. */
 export function speakable(text: string): string {
-  return text
+  return stripStageDirections(text)
     .replace(/\[mood:[a-z]+\]/gi, "")
     .replace(/https?:\/\/\S+/g, "")
     .replace(/[*_#`>|~]/g, "")
@@ -256,38 +257,132 @@ type Recognition = {
   lang: string;
   interimResults: boolean;
   continuous: boolean;
-  onresult: (e: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void;
+  maxAlternatives: number;
+  onresult: (e: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void;
   onend: () => void;
-  onerror: () => void;
+  onerror: (e: { error: string }) => void;
   start: () => void;
   stop: () => void;
+  abort: () => void;
 };
 
 export function canListen() {
   return typeof window !== "undefined" && ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
 }
 
-export function listen(onText: (text: string, final: boolean) => void): () => void {
+/** The recognition language for the language they chose to talk in. */
+export function speechLang(language: string): string {
+  const browser = typeof navigator !== "undefined" ? navigator.language : "en-US";
+  const map: Record<string, string> = {
+    // Hinglish is typed in Latin script, which Indian-English recognition writes best.
+    Hinglish: "en-IN", Hindi: "hi-IN", Bengali: "bn-IN", Tamil: "ta-IN", Telugu: "te-IN", Marathi: "mr-IN", Gujarati: "gu-IN",
+    Kannada: "kn-IN", Malayalam: "ml-IN", Punjabi: "pa-IN", Urdu: "ur-PK", Spanish: "es-ES", French: "fr-FR", German: "de-DE",
+    Arabic: "ar-SA", Portuguese: "pt-BR", Japanese: "ja-JP",
+  };
+  if (map[language]) {
+    // Prefer the browser's regional variant of the same language (es-MX over es-ES, etc.).
+    return browser.split("-")[0] === map[language].split("-")[0] && language !== "Hinglish" ? browser : map[language];
+  }
+  return /^en/i.test(browser) ? browser : "en-US";
+}
+
+export type DictationError = "no-permission" | "no-mic" | "network" | "unsupported" | "other";
+
+export type Dictation = {
+  /** Stop listening and get everything that was said (waits briefly for the last words). */
+  finish: () => Promise<string>;
+  /** Stop listening and throw the words away. */
+  cancel: () => void;
+};
+
+/**
+ * Push-to-talk dictation: listens until `finish()` or `cancel()`, however long
+ * the pauses. Browsers end recognition by themselves after some silence, so it
+ * quietly restarts and keeps what was already heard.
+ */
+export function startDictation(opts: { lang: string; onText: (text: string) => void; onError: (e: DictationError) => void }): Dictation {
   const W = window as unknown as { SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition };
   const Ctor = W.SpeechRecognition ?? W.webkitSpeechRecognition;
-  if (!Ctor) return () => {};
+  if (!Ctor) {
+    opts.onError("unsupported");
+    return { finish: async () => "", cancel: () => {} };
+  }
   stopSpeaking();
-  const rec = new Ctor();
-  rec.lang = navigator.language || "en-US";
-  rec.interimResults = true;
-  rec.continuous = false;
-  rec.onresult = (e) => {
-    let text = "";
-    let final = false;
-    for (let i = 0; i < e.results.length; i++) {
-      text += e.results[i][0].transcript;
-      final ||= e.results[i].isFinal;
-    }
-    onText(text, final);
+
+  let committed = ""; // finished sessions (before an automatic restart)
+  let session = ""; // the current session's words, final + interim
+  let holding = true;
+  let rec: Recognition | null = null;
+  let ended: (() => void) | null = null;
+  const full = () => [committed, session].map((x) => x.trim()).filter(Boolean).join(" ");
+
+  const begin = () => {
+    const r = new Ctor();
+    rec = r;
+    r.lang = opts.lang;
+    r.continuous = true;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+    r.onresult = (e) => {
+      let text = "";
+      for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+      session = text;
+      opts.onText(full());
+    };
+    r.onerror = (e) => {
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      holding = false;
+      opts.onError(e.error === "not-allowed" || e.error === "service-not-allowed" ? "no-permission" : e.error === "audio-capture" ? "no-mic" : e.error === "network" ? "network" : "other");
+    };
+    r.onend = () => {
+      committed = full();
+      session = "";
+      if (holding) {
+        try {
+          begin(); // the browser stopped on its own while they're still holding: keep going
+          return;
+        } catch {
+          holding = false;
+        }
+      }
+      setListening(false);
+      ended?.();
+    };
+    r.start();
   };
-  rec.onend = () => setListening(false);
-  rec.onerror = () => setListening(false);
+
   setListening(true);
-  rec.start();
-  return () => rec.stop();
+  try {
+    begin();
+  } catch {
+    setListening(false);
+    opts.onError("other");
+  }
+
+  return {
+    finish: () =>
+      new Promise<string>((resolve) => {
+        holding = false;
+        const done = () => resolve(full());
+        if (!rec) return done();
+        // The last words arrive just after stop(); wait for them, but not forever.
+        const timer = setTimeout(() => {
+          ended = null;
+          setListening(false);
+          rec?.abort();
+          done();
+        }, 1500);
+        ended = () => {
+          clearTimeout(timer);
+          done();
+        };
+        rec.stop();
+      }),
+    cancel: () => {
+      holding = false;
+      ended = null;
+      rec?.abort();
+      setListening(false);
+    },
+  };
 }

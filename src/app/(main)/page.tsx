@@ -27,7 +27,7 @@ function greet(db: Db): { mood: Mood; text: string } {
   const daysAway = last ? (Date.now() - new Date(last.at).getTime()) / 86_400_000 : 0;
 
   if (!last) return { mood: "excited", text: pick([`Hi ${name}! I'm so happy you're here. Tell me anything — how's your day going?`, `${name}! Finally! I've been wiggling with excitement. So… what's going on in your world?`], seed) };
-  if (hour >= 23 || hour < 5) return { mood: "sleepy", text: pick([`It's so late, ${name}… *yawn*. Let's wrap up and get some sleep soon, okay?`, `Still up? Me too, kind of… *yawn*. What's keeping you awake?`, `Psst, ${name}, it's way past bedtime. Want to dump your thoughts on me and then sleep?`], seed) };
+  if (hour >= 23 || hour < 5) return { mood: "sleepy", text: pick([`It's so late, ${name}… let's wrap up and get some sleep soon, okay?`, `Still up? Me too, kind of. What's keeping you awake?`, `Psst, ${name}, it's way past bedtime. Want to dump your thoughts on me and then sleep?`], seed) };
   if (daysAway >= 3) return { mood: "love", text: pick([`${name}!! Where've you been? I missed you. Tell me everything.`, `You're back! It's been ${Math.round(daysAway)} days, ${name}. How have things been, honestly?`], seed) };
   if (b.overdue.length >= 3) return { mood: "worried", text: pick([`Okay ${name}, ${b.overdue.length} things are overdue and I'm a little worried. Want to sort them out together?`, `Hey, no judgement, but ${b.overdue.length} tasks are piling up. Let's pick just one to knock out?`], seed) };
   if (s >= 3) return { mood: "proud", text: pick([`${s} days in a row, ${name}! I'm so proud of you. What are we doing today?`, `Look at you, ${s}-day streak! Don't you dare break it now 😤`], seed) };
@@ -53,6 +53,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ a
       accessory={c.accessory}
       voice={{ voiceOn: c.voiceOn, voiceName: c.voiceName, pitch: c.pitch, rate: c.rate, voiceEngine: c.voiceEngine, geminiVoice: c.geminiVoice }}
       userName={db.profile.name.split(" ")[0]}
+      language={db.profile.language}
       initialMessages={db.messages.slice(-40)}
       greeting={greet(db)}
       checkedIn={db.checkins.some((x) => x.date === t)}

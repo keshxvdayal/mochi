@@ -59,7 +59,15 @@ export async function verifySessionToken(token: string | undefined | null): Prom
   if (!token) return null;
   const [payload, mac] = token.split(".");
   if (!payload || !mac) return null;
-  const expected = Buffer.from(sign(payload, await getSecret()));
+  let key: string;
+  try {
+    key = await getSecret();
+  } catch (err) {
+    // Database unreachable: treat as signed out rather than crashing the page.
+    console.error("[auth] session check failed:", err instanceof Error ? err.message : err);
+    return null;
+  }
+  const expected = Buffer.from(sign(payload, key));
   const given = Buffer.from(mac);
   if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null;
   try {

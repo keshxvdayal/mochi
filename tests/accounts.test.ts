@@ -84,3 +84,12 @@ test("time apart reads naturally", () => {
   assert.equal(ago("2026-11-04T10:00:00Z", now), "yesterday");
   assert.equal(ago("2026-11-01T12:00:00Z", now), "4 days ago");
 });
+
+test("database credentials are found however Vercel named them", async () => {
+  const { findRestCredentials } = await import("@/lib/kv");
+  assert.deepEqual(findRestCredentials({ KV_REST_API_URL: "https://a", KV_REST_API_TOKEN: "t" }), { url: "https://a", token: "t" });
+  assert.deepEqual(findRestCredentials({ MOCHI_KV_REST_API_URL: "https://b", MOCHI_KV_REST_API_TOKEN: "t2" }), { url: "https://b", token: "t2" });
+  assert.deepEqual(findRestCredentials({ REDIS_URL: "rediss://default:s3cret@fun-cat-1234.upstash.io:6379" }), { url: "https://fun-cat-1234.upstash.io", token: "s3cret" });
+  assert.equal(findRestCredentials({ REDIS_URL: "redis://user:pw@redis-123.cloud.redislabs.com:1234" }), null, "non-Upstash Redis has no REST API");
+  assert.equal(findRestCredentials({}), null);
+});

@@ -13,15 +13,47 @@ import path from "path";
  * serverless requests can't overwrite each other.
  */
 
-const REST_URL = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
-const REST_TOKEN = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
+/**
+ * Finds Upstash REST credentials however Vercel named them: the standard names,
+ * a custom prefix chosen when connecting storage (e.g. MOCHI_KV_REST_API_URL),
+ * or an Upstash redis:// URL (its password doubles as the REST token).
+ */
+export function findRestCredentials(env: Record<string, string | undefined> = process.env): { url: string; token: string } | null {
+  const pairs: [string, string][] = [
+    ["KV_REST_API_URL", "KV_REST_API_TOKEN"],
+    ["UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN"],
+  ];
+  for (const k of Object.keys(env)) {
+    for (const suffix of ["KV_REST_API_URL", "UPSTASH_REDIS_REST_URL", "REDIS_REST_URL"]) {
+      if (k.endsWith(`_${suffix}`)) pairs.push([k, k.replace(/URL$/, "TOKEN")]);
+    }
+  }
+  for (const [u, t] of pairs) if (env[u] && env[t]) return { url: env[u]!, token: env[t]! };
+  for (const k of Object.keys(env)) {
+    if (!/(^|_)(REDIS_URL|KV_URL)$/.test(k) || !env[k]) continue;
+    try {
+      const url = new URL(env[k]!);
+      if (url.hostname.endsWith(".upstash.io") && url.password) return { url: `https://${url.hostname}`, token: decodeURIComponent(url.password) };
+    } catch {
+      /* not a URL */
+    }
+  }
+  return null;
+}
+
+const creds = findRestCredentials();
+const REST_URL = creds?.url;
+const REST_TOKEN = creds?.token;
 const DATA_DIR = process.env.MOCHI_DATA_DIR ?? path.join(process.cwd(), "data");
 
 export const usingRedis = () => Boolean(REST_URL && REST_TOKEN);
 
 function assertWritableBackend() {
   if (!usingRedis() && process.env.VERCEL) {
-    throw new Error("No database configured. On Vercel, add Upstash Redis (Storage tab) so KV_REST_API_URL and KV_REST_API_TOKEN are set, then redeploy.");
+    const seen = Object.keys(process.env).filter((k) => /REDIS|KV_/.test(k));
+    throw new Error(
+      `No database configured. On Vercel, connect Upstash Redis (Storage tab) so KV_REST_API_URL and KV_REST_API_TOKEN are set, then redeploy.${seen.length ? ` Found only: ${seen.join(", ")} (Mochi needs Upstash's REST URL and token).` : ""}`,
+    );
   }
 }
 

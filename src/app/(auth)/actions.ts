@@ -25,6 +25,15 @@ function safeNext(next: FormDataEntryValue | null): string {
   return n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/\\") ? n : "/";
 }
 
+/** Turns a server failure into a message, instead of a 500 that crashes the page. */
+function failure(err: unknown, fields: { name?: string; email?: string }): AuthState {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error("[auth]", msg);
+  if (/No database configured/.test(msg)) return { error: "The app's database isn't connected yet. (Owner: in Vercel, open Storage → Upstash Redis → connect it to this project, then redeploy.)", fields };
+  if (/Redis|fetch failed|ECONN|ENOTFOUND/i.test(msg)) return { error: "I couldn't reach the database just now. Please try again in a moment.", fields };
+  return { error: "Something went wrong on my side. Please try again.", fields };
+}
+
 // Spend the same time on unknown emails as on wrong passwords, so attackers can't tell which emails have accounts.
 const dummyHash = hashPassword("not-a-real-password");
 
@@ -33,10 +42,14 @@ export async function signUp(_prev: AuthState, form: FormData): Promise<AuthStat
   const fields = { name: String(raw.name ?? ""), email: String(raw.email ?? "") };
   const parsed = SignUp.safeParse(raw);
   if (!parsed.success) return { error: parsed.error.issues[0]?.message, fields };
-  const user = await createUser({ ...parsed.data, timezone: String(form.get("timezone") ?? "") });
-  if (!user) return { error: "There's already an account with that email. Try signing in.", fields };
-  await startSession(user.id);
-  redirect("/welcome");
+  try {
+    const user = await createUser({ ...parsed.data, timezone: String(form.get("timezone") ?? "") });
+    if (!user) return { error: "There's already an account with that email. Try signing in.", fields };
+    await startSession(user.id);
+  } catch (err) {
+    return failure(err, fields);
+  }
+  redirect("/welcome"); // outside try: redirect() works by throwing
 }
 
 export async function signIn(_prev: AuthState, form: FormData): Promise<AuthState> {
@@ -45,16 +58,20 @@ export async function signIn(_prev: AuthState, form: FormData): Promise<AuthStat
   const parsed = SignIn.safeParse(raw);
   if (!parsed.success) return { error: parsed.error.issues[0]?.message, fields };
   const email = normalizeEmail(parsed.data.email);
-  if (!(await underLimit(`signin:${email}`, 10, 15 * 60))) {
-    return { error: "Too many tries. Take a breather and try again in 15 minutes.", fields };
+  try {
+    if (!(await underLimit(`signin:${email}`, 10, 15 * 60))) {
+      return { error: "Too many tries. Take a breather and try again in 15 minutes.", fields };
+    }
+    const user = await findUserByEmail(email);
+    const ok = user ? await verifyPassword(parsed.data.password, user.passwordHash) : (await verifyPassword(parsed.data.password, await dummyHash), false);
+    if (!user || !ok) return { error: "That email and password don't match.", fields };
+    const tz = String(form.get("timezone") ?? "");
+    if (tz) await mutate(user.id, (db) => void (db.timezone = safeTz(tz)));
+    await startSession(user.id);
+  } catch (err) {
+    return failure(err, fields);
   }
-  const user = await findUserByEmail(email);
-  const ok = user ? await verifyPassword(parsed.data.password, user.passwordHash) : (await verifyPassword(parsed.data.password, await dummyHash), false);
-  if (!user || !ok) return { error: "That email and password don't match.", fields };
-  const tz = String(form.get("timezone") ?? "");
-  if (tz) await mutate(user.id, (db) => void (db.timezone = safeTz(tz)));
-  await startSession(user.id);
-  redirect(safeNext(form.get("next")));
+  redirect(safeNext(form.get("next"))); // outside try: redirect() works by throwing
 }
 
 export async function signOut() {

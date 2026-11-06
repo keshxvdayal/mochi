@@ -1,214 +1,400 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, Sparkles } from "lucide-react";
-import { Companion } from "@/components/companion/companion";
-import { btn, field } from "@/components/ui";
+import { useEffect, useRef, useState } from "react";
+import { Check, Send, Sparkles, Volume2 } from "lucide-react";
+import { Mochi } from "@/components/character/mochi";
+import { btn } from "@/components/ui";
 import { api } from "@/lib/client-api";
-import { setMood } from "@/lib/companion-state";
-import { enqueueSpeech, stopSpeaking } from "@/lib/speech";
+import { setMood, setThinking } from "@/lib/companion-state";
+import { canAutoplay, enqueueSpeech, flushSpeech, stopSpeaking, unlockAudio } from "@/lib/speech";
 import {
-  ACCESSORIES,
   BODY_COLORS,
-  EYE_COLORS,
   FOCUS_AREAS,
   LANGUAGES,
   LIFE_STAGES,
-  type Accessory,
   type BodyColor,
   type CompanionSettings,
-  type EyeColor,
   type FocusArea,
   type LifeStage,
   type Mood,
   type Profile,
 } from "@/lib/types";
 
-const STEPS: { mood: Mood; say: (p: Profile, c: CompanionSettings) => string }[] = [
-  { mood: "excited", say: () => "Hiii! I'm your new companion! First, make me yours: what's my name, and how should I look?" },
-  { mood: "happy", say: (_, c) => `${c.name}! I love it. Now tell me about you!` },
-  { mood: "thinking", say: (p) => `What does life look like for you right now, ${p.name.split(" ")[0] || "friend"}?` },
-  { mood: "love", say: () => "What should I help you with? Pick as many as you like, and tell me your dreams." },
-  { mood: "proud", say: () => "Last bit: what are you great at, and what's a normal day like?" },
+type Data = { p: Profile; c: CompanionSettings };
+type Option = { value: string; label: string; swatch?: string };
+type Step = {
+  id: string;
+  mood: Mood;
+  ask: (d: Data) => string;
+  kind: "chips" | "multi" | "text";
+  options?: (d: Data) => Option[];
+  placeholder?: (d: Data) => string;
+  skippable?: boolean;
+  apply: (d: Data, answer: string) => Data;
+  react: (d: Data, answer: string) => { mood: Mood; text: string };
+};
+
+const pick = <T,>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
+const first = (p: Profile) => p.name.split(" ")[0] || "friend";
+
+const STAGE_REACTION: Record<LifeStage, string> = {
+  student: "A student! Big learning energy. I'll help with exams, focus and figuring out what's next.",
+  working: "Working life! I'll help you grow and still have a life outside work.",
+  business: "Running a business?! That's so cool. I'll be your tiny co-founder.",
+  "job-seeking": "Looking for work. That takes guts. We'll find you something great, together.",
+  parent: "A parent! You deserve a helper. I'll look after you while you look after them.",
+  homemaker: "Running a home is a real job. I'll help make the week feel lighter.",
+  retired: "Retired! Time for all the things you never had time for.",
+  other: "Something else! I like a mystery. You'll tell me more as we go.",
+};
+
+const STEPS: Step[] = [
+  {
+    id: "hello",
+    mood: "excited",
+    ask: (d) => `Hiii ${first(d.p)}! I'm ${d.c.name}, your new companion. Can I ask you a few quick things so I actually get to know you?`,
+    kind: "chips",
+    options: () => [
+      { value: "yes", label: "Sure, let's go!" },
+      { value: "quick", label: "Okay, but quickly 😅" },
+    ],
+    apply: (d) => d,
+    react: (_, a) => (a === "quick" ? { mood: "playful", text: "Super quick, promise!" } : { mood: "happy", text: "Yay!" }),
+  },
+  {
+    id: "name",
+    mood: "happy",
+    ask: () => "First things first: what should I call you?",
+    kind: "text",
+    options: (d) => (d.p.name ? [{ value: first(d.p), label: first(d.p) }] : []),
+    placeholder: () => "Your name or nickname",
+    apply: (d, a) => ({ ...d, p: { ...d.p, name: a.slice(0, 60) } }),
+    react: (_, a) => pick([{ mood: "love", text: `${a}! I love that.` }, { mood: "happy", text: `Nice to properly meet you, ${a}!` }]),
+  },
+  {
+    id: "companion",
+    mood: "playful",
+    ask: (d) => `And what do you want to call me? I'm ${d.c.name} right now, but I'm open to ideas 👀`,
+    kind: "text",
+    options: (d) => [{ value: d.c.name, label: `${d.c.name} is perfect` }],
+    placeholder: () => "A name for me",
+    apply: (d, a) => ({ ...d, c: { ...d.c, name: a.slice(0, 30) } }),
+    react: (d, a) => (a === "Mochi" ? { mood: "happy", text: "Mochi it is! Soft, round and sweet. Like me." } : { mood: "excited", text: `${a}! Ooh, I love it. That's me now.` }),
+  },
+  {
+    id: "color",
+    mood: "excited",
+    ask: () => "Pick my colour!",
+    kind: "chips",
+    options: () => (Object.keys(BODY_COLORS) as BodyColor[]).map((k) => ({ value: k, label: BODY_COLORS[k].label, swatch: BODY_COLORS[k].body })),
+    apply: (d, a) => ({ ...d, c: { ...d.c, color: a as BodyColor } }),
+    react: (_, a) => ({ mood: "love", text: `Ooh, I look SO good in ${BODY_COLORS[a as BodyColor].label.toLowerCase()}. Great taste.` }),
+  },
+  {
+    id: "stage",
+    mood: "thinking",
+    ask: (d) => `So, ${first(d.p)}, what does life look like for you right now?`,
+    kind: "chips",
+    options: () => (Object.keys(LIFE_STAGES) as LifeStage[]).map((k) => ({ value: k, label: `${LIFE_STAGES[k].emoji} ${LIFE_STAGES[k].label}` })),
+    apply: (d, a) => ({ ...d, p: { ...d.p, lifeStage: a as LifeStage } }),
+    react: (_, a) => ({ mood: "happy", text: STAGE_REACTION[a as LifeStage] }),
+  },
+  {
+    id: "occupation",
+    mood: "happy",
+    ask: () => "Tell me a little more. What do you actually do day to day?",
+    kind: "text",
+    skippable: true,
+    placeholder: (d) =>
+      ({
+        student: "e.g. B.Tech 2nd year at DTU",
+        working: "e.g. designer at a startup",
+        business: "e.g. I run a bakery",
+        "job-seeking": "e.g. looking for marketing roles",
+        parent: "e.g. two kids, 4 and 9",
+        homemaker: "e.g. I run our home and help my mum",
+        retired: "e.g. retired teacher, love gardening",
+        other: "In your own words",
+      })[d.p.lifeStage],
+    apply: (d, a) => ({ ...d, p: { ...d.p, occupation: a.slice(0, 160) } }),
+    react: () => pick([{ mood: "happy", text: "Ooh, interesting! I want to hear more about that sometime." }, { mood: "proud", text: "That sounds like a lot. Respect." }]),
+  },
+  {
+    id: "focus",
+    mood: "love",
+    ask: () => "What should I help you with? Pick as many as you like.",
+    kind: "multi",
+    options: () => (Object.keys(FOCUS_AREAS) as FocusArea[]).map((k) => ({ value: k, label: `${FOCUS_AREAS[k].emoji} ${FOCUS_AREAS[k].label}` })),
+    apply: (d, a) => ({ ...d, p: { ...d.p, focusAreas: a ? (a.split(",") as FocusArea[]) : [] } }),
+    react: (_, a) => (a.split(",").length > 5 ? { mood: "excited", text: "All of it?! Okay, I love an ambitious human." } : { mood: "happy", text: "Great picks. I'll keep an eye on those." }),
+  },
+  {
+    id: "aspirations",
+    mood: "thinking",
+    ask: () => "What are you working toward right now? Big or small, anything counts.",
+    kind: "text",
+    skippable: true,
+    placeholder: () => "A promotion, a fitter body, my own home, a calmer mind…",
+    apply: (d, a) => ({ ...d, p: { ...d.p, aspirations: a.slice(0, 600) } }),
+    react: () => pick([{ mood: "proud", text: "That's a good one. We'll get you there, step by step." }, { mood: "excited", text: "Ooh, I'm already excited for when you get there." }]),
+  },
+  {
+    id: "routine",
+    mood: "happy",
+    ask: () => "What does a normal day look like? When you wake up, work, sleep… roughly.",
+    kind: "text",
+    skippable: true,
+    placeholder: () => "Up at 7, office 9–6, gym evenings, sleep by 12…",
+    apply: (d, a) => ({ ...d, p: { ...d.p, routine: a.slice(0, 600) } }),
+    react: () => ({ mood: "happy", text: "Noted! I'll plan things around that." }),
+  },
+  {
+    id: "weaknesses",
+    mood: "love",
+    ask: () => "Be honest with me: what's something you'd like to get better at?",
+    kind: "text",
+    skippable: true,
+    placeholder: () => "Procrastination, confidence, sleep, patience…",
+    apply: (d, a) => ({ ...d, p: { ...d.p, weaknesses: a.slice(0, 600) } }),
+    react: () => ({ mood: "love", text: "Thanks for trusting me with that. We'll work on it together, no judgement." }),
+  },
+  {
+    id: "language",
+    mood: "playful",
+    ask: () => "Last one! Which language should I talk to you in?",
+    kind: "chips",
+    options: () => LANGUAGES.map((l) => ({ value: l, label: l })),
+    apply: (d, a) => ({ ...d, p: { ...d.p, language: a } }),
+    react: (_, a) => (a === "Hinglish" ? { mood: "playful", text: "Hinglish it is! Chalo, let's go." } : a === "English" ? { mood: "happy", text: "English it is!" } : { mood: "excited", text: `${a}! Perfect.` }),
+  },
 ];
 
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button type="button" onClick={onClick} className={`flex items-center gap-2 rounded-2xl px-3 py-2 text-sm font-bold ring-2 transition ${active ? "bg-white ring-violet-400 shadow-sm" : "bg-white/60 ring-transparent hover:ring-violet-200"}`}>
-      {children}
-    </button>
-  );
-}
+type Line = { from: "mochi" | "me"; text: string };
 
-function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
-  return (
-    <label className="block space-y-1.5">
-      <span className="text-sm font-bold">
-        {label} {hint && <span className="font-semibold text-muted">· {hint}</span>}
-      </span>
-      {children}
-    </label>
-  );
-}
-
-export function Onboarding({ companion: initialC, profile: initialP }: { companion: CompanionSettings; profile: Profile }) {
+export function Onboarding({ companion, profile }: { companion: CompanionSettings; profile: Profile }) {
   const router = useRouter();
+  const [data, setData] = useState<Data>({ p: profile, c: companion });
+  const [lines, setLines] = useState<Line[]>([]);
   const [step, setStep] = useState(0);
-  const [c, setC] = useState(initialC);
-  const [p, setP] = useState(initialP);
-  const [busy, setBusy] = useState(false);
-  const up = (k: keyof Profile) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setP({ ...p, [k]: e.target.value });
-  const stage = LIFE_STAGES[p.lifeStage];
+  const [typing, setTyping] = useState(true);
+  const [text, setText] = useState("");
+  const [multi, setMulti] = useState<string[]>(profile.focusAreas);
+  const [done, setDone] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const scroller = useRef<HTMLDivElement>(null);
+  const audioOk = useRef(false);
+  const lastLine = useRef<{ text: string; mood: Mood } | null>(null);
+  const [needTap, setNeedTap] = useState(false);
+  const cur = STEPS[step];
+
+  const voice = { ...data.c, voiceOn: data.c.voiceOn };
+
+  /** Mochi "types" for a moment, then says the line (out loud once audio is allowed). */
+  function mochiSays(textToSay: string, mood: Mood, then?: () => void) {
+    setTyping(true);
+    setThinking(true);
+    setTimeout(
+      () => {
+        setThinking(false);
+        setTyping(false);
+        setMood(mood);
+        setLines((ls) => [...ls, { from: "mochi", text: textToSay }]);
+        lastLine.current = { text: textToSay, mood };
+        // Queue, don't interrupt: the reaction and the next question play one after the other.
+        enqueueSpeech(textToSay, { ...voice, voiceOn: voice.voiceOn && audioOk.current });
+        flushSpeech();
+        then?.();
+      },
+      450 + Math.min(900, textToSay.length * 12),
+    );
+  }
+
+  // First question.
+  useEffect(() => {
+    // Speak right away if the browser already allows sound (they just clicked "Create my account");
+    // otherwise show a "tap to hear me" button.
+    const t = setTimeout(() => {
+      if (canAutoplay()) {
+        audioOk.current = true;
+        unlockAudio();
+      } else setNeedTap(true);
+      mochiSays(STEPS[0].ask(data), STEPS[0].mood);
+    }, 0);
+    return () => {
+      clearTimeout(t);
+      stopSpeaking();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
-    setMood(STEPS[step].mood);
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
+  }, [lines, typing]);
+
+  function answer(value: string, shown: string) {
+    if (typing || done) return;
+    audioOk.current = true;
+    setNeedTap(false);
+    unlockAudio();
     stopSpeaking();
-    enqueueSpeech(STEPS[step].say(p, c), { ...c, voiceOn: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+    const next = cur.apply(data, value);
+    setData(next);
+    setLines((ls) => [...ls, { from: "me", text: shown }]);
+    setText("");
+    // Save as we go, so leaving halfway doesn't lose anything.
+    void api("/api/profile", "PUT", { profile: next.p, companion: next.c }).catch(() => {});
+    const r = cur.react(next, value);
+    const isLast = step === STEPS.length - 1;
+    mochiSays(r.text, r.mood, () => {
+      if (isLast) {
+        mochiSays(`Yay, I feel like I know you a little now, ${first(next.p)}! I'll learn the rest as we talk. Ready?`, "excited", () => setDone(true));
+      } else {
+        const n = STEPS[step + 1];
+        setStep(step + 1);
+        setTimeout(() => mochiSays(n.ask(next), n.mood), 250);
+      }
+    });
+  }
 
   async function finish() {
-    setBusy(true);
-    await api("/api/profile", "PUT", { profile: p, companion: c, onboarded: true, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+    setSaving(true);
+    unlockAudio();
+    await api("/api/profile", "PUT", { profile: data.p, companion: data.c, onboarded: true, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
     setMood("excited");
-    router.push("/");
+    router.push("/home");
     router.refresh();
   }
 
-  const toggleFocus = (f: FocusArea) => setP({ ...p, focusAreas: p.focusAreas.includes(f) ? p.focusAreas.filter((x) => x !== f) : [...p.focusAreas, f] });
-  const canNext = step === 0 ? c.name.trim().length > 0 : step === 1 ? p.name.trim().length > 0 : true;
+  const options = cur.options?.(data) ?? [];
 
   return (
-    <div className="mx-auto grid min-h-screen max-w-6xl items-center gap-6 px-4 py-8 lg:grid-cols-[1fr_1.05fr]">
-      <div className="relative h-[42vh] min-h-[320px] lg:h-[80vh]">
-        <div className="absolute inset-x-6 top-2 z-10 flex justify-center">
-          <p key={step} className="pop max-w-md rounded-3xl bg-white/95 px-5 py-3 text-center text-[17px] font-bold leading-snug shadow-lg">{STEPS[step].say(p, c)}</p>
-        </div>
-        <div className="absolute inset-x-0 bottom-0 top-14">
-          <Companion color={c.color} eyeColor={c.eyeColor} accessory={c.accessory} />
-        </div>
+    <div className="mx-auto grid min-h-screen max-w-6xl items-center gap-4 px-4 py-6 lg:grid-cols-[1fr_1.1fr]">
+      <div className="mx-auto h-[34vh] min-h-[240px] w-full max-w-md lg:h-[72vh]">
+        <Mochi color={data.c.color} eyeColor={data.c.eyeColor} accessory={data.c.accessory} />
       </div>
 
-      <div className="glass rounded-[2rem] p-6 sm:p-8">
-        <div className="mb-6 flex gap-1.5">
-          {STEPS.map((_, i) => (
-            <span key={i} className={`h-2 flex-1 rounded-full transition ${i <= step ? "candy" : "bg-violet-100"}`} />
-          ))}
+      <div className="glass flex h-[60vh] flex-col overflow-hidden rounded-[2rem] lg:h-[80vh]">
+        <div className="flex items-center gap-2 border-b border-line px-5 py-3">
+          <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-400" />
+          <p className="font-extrabold">{data.c.name}</p>
+          <p className="text-sm text-muted">· getting to know you</p>
+          <div className="ml-auto flex gap-1">
+            {STEPS.map((s, i) => (
+              <span key={s.id} className={`h-1.5 w-3 rounded-full ${i < step || done ? "candy" : i === step ? "bg-violet-300" : "bg-violet-100"}`} />
+            ))}
+          </div>
         </div>
 
-        {step === 0 && (
-          <div className="pop space-y-5">
-            <h1 className="text-3xl font-extrabold tracking-tight">Meet your <span className="candy-text">companion</span></h1>
-            <Field label="Name">
-              <input className={field} value={c.name} onChange={(e) => setC({ ...c, name: e.target.value.slice(0, 30) })} placeholder="Mochi" />
-            </Field>
-            <div>
-              <p className="mb-2 text-sm font-bold">Colour</p>
-              <div className="flex flex-wrap gap-2">
-                {(Object.keys(BODY_COLORS) as BodyColor[]).map((k) => (
-                  <Chip key={k} active={c.color === k} onClick={() => setC({ ...c, color: k })}>
-                    <span className="h-5 w-5 rounded-full shadow-inner" style={{ background: BODY_COLORS[k].body }} /> {BODY_COLORS[k].label}
-                  </Chip>
-                ))}
-              </div>
+        <div ref={scroller} className="flex-1 space-y-2.5 overflow-y-auto px-4 py-4">
+          {lines.map((l, i) => (
+            <div key={i} className={`pop flex ${l.from === "me" ? "justify-end" : "justify-start"}`}>
+              <p className={`max-w-[85%] rounded-3xl px-4 py-2.5 text-[15px] leading-snug ${l.from === "me" ? "candy rounded-br-lg text-white" : "rounded-bl-lg bg-white font-semibold shadow-sm"}`}>{l.text}</p>
             </div>
-            <div>
-              <p className="mb-2 text-sm font-bold">Eyes</p>
-              <div className="flex flex-wrap gap-2">
-                {(Object.keys(EYE_COLORS) as EyeColor[]).map((k) => (
-                  <button key={k} onClick={() => setC({ ...c, eyeColor: k })} title={k} className={`h-9 w-9 rounded-full ring-2 ring-offset-2 transition ${c.eyeColor === k ? "ring-violet-400" : "ring-transparent"}`} style={{ background: `radial-gradient(circle at 50% 65%, ${EYE_COLORS[k]} 0%, #1a0f2e 75%)` }} />
-                ))}
-              </div>
-            </div>
-            <div>
-              <p className="mb-2 text-sm font-bold">Accessory</p>
-              <div className="flex flex-wrap gap-2">
-                {(Object.keys(ACCESSORIES) as Accessory[]).map((k) => (
-                  <Chip key={k} active={c.accessory === k} onClick={() => setC({ ...c, accessory: k })}>
-                    {ACCESSORIES[k].emoji} {ACCESSORIES[k].label}
-                  </Chip>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {step === 1 && (
-          <div className="pop space-y-4">
-            <h2 className="text-2xl font-extrabold">About you</h2>
-            <div className="grid gap-3 sm:grid-cols-[1fr_120px]">
-              <Field label="Your name"><input className={field} value={p.name} onChange={up("name")} autoFocus /></Field>
-              <Field label="Age"><input className={field} value={p.age} onChange={up("age")} inputMode="numeric" /></Field>
-            </div>
-            <Field label="City"><input className={field} value={p.city} onChange={up("city")} /></Field>
-            <Field label="Talk to me in">
-              <select className={field} value={p.language} onChange={up("language")}>
-                {LANGUAGES.map((l) => <option key={l}>{l}</option>)}
-              </select>
-            </Field>
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="pop space-y-4">
-            <h2 className="text-2xl font-extrabold">Your life right now</h2>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {(Object.keys(LIFE_STAGES) as LifeStage[]).map((k) => (
-                <button key={k} onClick={() => setP({ ...p, lifeStage: k })} className={`rounded-2xl p-3 text-left ring-2 transition ${p.lifeStage === k ? "bg-white ring-violet-400 shadow-sm" : "bg-white/60 ring-transparent hover:ring-violet-200"}`}>
-                  <span className="text-2xl">{LIFE_STAGES[k].emoji}</span>
-                  <span className="mt-1 block text-[13px] font-extrabold leading-tight">{LIFE_STAGES[k].label}</span>
-                </button>
-              ))}
-            </div>
-            <Field label="In your words, what do you do?"><input className={field} value={p.occupation} onChange={up("occupation")} placeholder="e.g. I run a bakery · I teach maths · I'm raising two kids · I study law" /></Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label={stage.org} hint="optional"><input className={field} value={p.organization} onChange={up("organization")} /></Field>
-              <Field label={stage.role} hint="optional"><input className={field} value={p.role} onChange={up("role")} /></Field>
-            </div>
-          </div>
-        )}
-
-        {step === 3 && (
-          <div className="pop space-y-4">
-            <h2 className="text-2xl font-extrabold">What should I help with?</h2>
-            <div className="flex flex-wrap gap-2">
-              {(Object.keys(FOCUS_AREAS) as FocusArea[]).map((k) => (
-                <Chip key={k} active={p.focusAreas.includes(k)} onClick={() => toggleFocus(k)}>
-                  {FOCUS_AREAS[k].emoji} {FOCUS_AREAS[k].label}
-                </Chip>
-              ))}
-            </div>
-            <Field label="What are you working toward?"><input className={field} value={p.aspirations} onChange={up("aspirations")} placeholder="A promotion, a fitter body, my own home, a calmer mind…" /></Field>
-            <Field label="Who do you dream of becoming?"><textarea className={`${field} min-h-24`} value={p.dream} onChange={up("dream")} placeholder="Dream big, I won't laugh!" /></Field>
-          </div>
-        )}
-
-        {step === 4 && (
-          <div className="pop space-y-4">
-            <h2 className="text-2xl font-extrabold">The real you</h2>
-            <Field label="What you're good at"><input className={field} value={p.strengths} onChange={up("strengths")} /></Field>
-            <Field label="What you want to get better at"><input className={field} value={p.weaknesses} onChange={up("weaknesses")} placeholder="procrastination, confidence, patience…" /></Field>
-            <Field label="A normal day" hint="optional"><input className={field} value={p.routine} onChange={up("routine")} placeholder="Up at 7, office 9–6, gym evenings…" /></Field>
-            <Field label="Anything about your health I should keep in mind?" hint="optional"><input className={field} value={p.health} onChange={up("health")} /></Field>
-          </div>
-        )}
-
-        <div className="mt-8 flex justify-between">
-          <button onClick={() => setStep(step - 1)} disabled={step === 0} className={`${btn.ghost} ${step === 0 ? "invisible" : ""}`}>
-            <ArrowLeft className="h-4 w-4" /> Back
-          </button>
-          {step < STEPS.length - 1 ? (
-            <button onClick={() => setStep(step + 1)} disabled={!canNext} className={btn.candy}>
-              Next <ArrowRight className="h-4 w-4" />
-            </button>
-          ) : (
-            <button onClick={finish} disabled={busy} className={btn.candy}>
-              <Sparkles className="h-4 w-4" /> Let&apos;s start!
+          ))}
+          {needTap && !typing && (
+            <button
+              onClick={() => {
+                audioOk.current = true;
+                setNeedTap(false);
+                unlockAudio();
+                stopSpeaking();
+                if (lastLine.current) {
+                  setMood(lastLine.current.mood);
+                  enqueueSpeech(lastLine.current.text, data.c);
+                  flushSpeech();
+                }
+              }}
+              className="pop ml-1 inline-flex items-center gap-1.5 rounded-full bg-violet-600 px-3 py-1.5 text-xs font-extrabold text-white shadow animate-pulse"
+            >
+              <Volume2 className="h-3.5 w-3.5" /> Tap to hear me
             </button>
           )}
+          {typing && (
+            <div className="flex">
+              <p className="typing rounded-3xl rounded-bl-lg bg-white px-4 py-3 shadow-sm">
+                <span>•</span>
+                <span>•</span>
+                <span>•</span>
+              </p>
+            </div>
+          )}
         </div>
-        <p className="mt-4 text-center text-xs text-muted">Your info is private to your account. Change anything later in About me.</p>
+
+        <div className="border-t border-line bg-white/60 p-3">
+          {done ? (
+            <button onClick={finish} disabled={saving} className={`${btn.candy} w-full py-3 text-base`}>
+              <Sparkles className="h-4 w-4" /> Let&apos;s go!
+            </button>
+          ) : typing ? (
+            <p className="py-3 text-center text-sm text-muted">{data.c.name} is typing…</p>
+          ) : (
+            <div className="pop space-y-2">
+              {cur.kind !== "text" && (
+                <div className="flex max-h-40 flex-wrap gap-2 overflow-y-auto">
+                  {options.map((o) => {
+                    const on = cur.kind === "multi" && multi.includes(o.value);
+                    return (
+                      <button
+                        key={o.value}
+                        onClick={() => (cur.kind === "multi" ? setMulti((m) => (m.includes(o.value) ? m.filter((x) => x !== o.value) : [...m, o.value])) : answer(o.value, o.label))}
+                        className={`flex items-center gap-2 rounded-2xl px-3 py-2 text-sm font-bold ring-2 transition ${on ? "bg-violet-50 ring-violet-400" : "bg-white ring-transparent hover:ring-violet-200"}`}
+                      >
+                        {o.swatch && <span className="h-4 w-4 rounded-full shadow-inner" style={{ background: o.swatch }} />}
+                        {o.label}
+                        {on && <Check className="h-3.5 w-3.5 text-violet-600" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {cur.kind === "multi" && (
+                <button
+                  onClick={() => answer(multi.join(","), multi.length ? multi.map((m) => FOCUS_AREAS[m as FocusArea].label).join(", ") : "Not sure yet")}
+                  className={`${btn.candy} w-full`}
+                >
+                  {multi.length ? `Done (${multi.length})` : "Not sure yet"}
+                </button>
+              )}
+              {cur.kind === "text" && (
+                <>
+                  {options.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {options.map((o) => (
+                        <button key={o.value} onClick={() => answer(o.value, o.label.replace(/ is perfect$/, ""))} className="rounded-2xl bg-white px-3 py-2 text-sm font-bold ring-2 ring-transparent transition hover:ring-violet-200">
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (text.trim()) answer(text.trim(), text.trim());
+                    }}
+                    className="flex items-center gap-2 rounded-2xl bg-white p-1.5 ring-1 ring-line"
+                  >
+                    <input
+                      autoFocus
+                      value={text}
+                      onChange={(e) => setText(e.target.value)}
+                      placeholder={cur.placeholder?.(data) ?? "Type here…"}
+                      className="min-w-0 flex-1 bg-transparent px-3 py-2 text-[15px] outline-none placeholder:text-muted/60"
+                    />
+                    {cur.skippable && (
+                      <button type="button" onClick={() => answer("", "Skip for now")} className={btn.ghost}>
+                        Skip
+                      </button>
+                    )}
+                    <button disabled={!text.trim()} className="candy grid h-10 w-10 place-items-center rounded-xl text-white disabled:opacity-40" aria-label="Send">
+                      <Send className="h-4 w-4" />
+                    </button>
+                  </form>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

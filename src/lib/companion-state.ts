@@ -20,13 +20,15 @@ export const live = {
   pokeAt: -10,
   listening: false,
   thinking: false,
+  /** Until when Mochi's (Gemini) voice is out of its daily quota; 0 = fine. */
+  voiceRestingUntil: 0,
 };
 
 const listeners = new Set<() => void>();
-let snapshot = { mood: live.mood, speaking: false, listening: false, thinking: false };
+let snapshot = { mood: live.mood, speaking: false, listening: false, thinking: false, voiceRestingUntil: 0 };
 
 function emit() {
-  snapshot = { mood: live.mood, speaking: live.speaking, listening: live.listening, thinking: live.thinking };
+  snapshot = { mood: live.mood, speaking: live.speaking, listening: live.listening, thinking: live.thinking, voiceRestingUntil: live.voiceRestingUntil };
   listeners.forEach((l) => l());
 }
 
@@ -49,6 +51,11 @@ export function setThinking(v: boolean) {
   live.thinking = v;
   emit();
 }
+export function setVoiceResting(until: number) {
+  live.voiceRestingUntil = until;
+  emit();
+}
+export const voiceResting = () => live.voiceRestingUntil > Date.now();
 export function poke() {
   live.pokeAt = performance.now() / 1000;
 }

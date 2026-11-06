@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { stripStageDirections } from "@/lib/stage-directions";
 import { speakable } from "@/lib/speech";
-import { ttsPrompt } from "@/lib/tts";
+import { ttsInput, ttsPrompt } from "@/lib/tts";
 
 test("stage directions are never read aloud", () => {
   assert.equal(speakable("*giggles* Okay that's adorable."), "Okay that's adorable.");
@@ -30,4 +30,9 @@ test("the voice request keeps the tone apart from the words to speak", () => {
   assert.match(notes, /Tone: cheerful/);
   assert.match(notes, /Never say the notes/);
   assert.ok(!/^Say \w+ly:/.test(p), "no bare 'Say cheerfully:' prefix");
+});
+
+test("models that read everything aloud get only the words", () => {
+  assert.equal(ttsInput("gemini-3.8-flash-lite-tts", "*giggles* Hi there!", "happy"), "Hi there!");
+  assert.match(ttsInput("gemini-3.8-flash-tts", "Hi there!", "happy"), /### TRANSCRIPT\nHi there!$/);
 });

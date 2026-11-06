@@ -146,10 +146,10 @@ export function AboutMe({ profile, people, memories, companionName }: { profile:
                   </div>
                   {x.notes && <p className="mt-2 rounded-xl bg-violet-50/60 px-3 py-2 text-sm">{x.notes}</p>}
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <button onClick={() => api(`/api/items/people/${x.id}`, "PATCH", { lastContact: today }).then(() => router.refresh())} className={btn.soft}>
+                    <button onClick={() => api(`/api/items/people/${x.id}`, "PATCH", { lastContact: today }, x.name).then(() => router.refresh())} className={btn.soft}>
                       <Phone className="h-4 w-4" /> We talked today
                     </button>
-                    <Link href={`/?ask=${encodeURIComponent(`Should I reach out to ${x.name}? If yes, what should I say?`)}`} className={btn.soft}>
+                    <Link href={`/home?ask=${encodeURIComponent(`Should I reach out to ${x.name}? If yes, what should I say?`)}`} className={btn.soft}>
                       <MessageCircle className="h-4 w-4 text-violet-500" /> What do I say?
                     </Link>
                   </div>

@@ -1,18 +1,15 @@
 "use client";
 
-import dynamic from "next/dynamic";
+import { Mochi } from "@/components/character/mochi";
 import type { Accessory, BodyColor, EyeColor } from "@/lib/types";
 
-const Stage = dynamic(() => import("@/components/companion/stage"), {
-  ssr: false,
-  loading: () => (
-    <div className="grid h-full w-full place-items-center">
-      <div className="h-28 w-28 animate-pulse rounded-full bg-gradient-to-br from-pink-200 to-violet-200" />
-    </div>
-  ),
-});
-
-/** The 3D companion. WebGL only runs in the browser, so it's never server-rendered. */
+/** The animated companion (2D SVG: light enough for any phone). */
 export function Companion(props: { color: BodyColor; eyeColor?: EyeColor; accessory?: Accessory; interactive?: boolean; sparkles?: boolean }) {
-  return <Stage {...props} />;
+  return (
+    <div className="grid h-full w-full place-items-center">
+      <div className="aspect-[240/250] h-full max-h-full max-w-full">
+        <Mochi color={props.color} eyeColor={props.eyeColor} accessory={props.accessory} interactive={props.interactive ?? true} />
+      </div>
+    </div>
+  );
 }

@@ -11,7 +11,9 @@ const PER_HOUR = Number(process.env.MOCHI_CHAT_LIMIT_PER_HOUR ?? 60);
 /** Streams newline-delimited JSON ChatEvents. */
 export async function POST(req: Request) {
   return withUser(async (uid) => {
-    const { text } = (await req.json().catch(() => ({}))) as { text?: string };
+    const { text, activity } = (await req.json().catch(() => ({}))) as { text?: string; activity?: unknown };
+    // What they've just been doing in the app (from the browser), e.g. "2 min ago: finished the task “Gym”".
+    const steps = Array.isArray(activity) ? activity.filter((x): x is string => typeof x === "string").slice(-15).map((x) => x.slice(0, 200)) : [];
     const message = text?.trim().slice(0, 4000);
     if (!message) return Response.json({ error: "Say something!" }, { status: 400 });
     if (!aiEnabled()) {
@@ -25,7 +27,7 @@ export async function POST(req: Request) {
     const body = new ReadableStream<Uint8Array>({
       async start(controller) {
         const send = (ev: ChatEvent) => controller.enqueue(enc.encode(JSON.stringify(ev) + "\n"));
-        for await (const ev of chat(uid, message)) send(ev);
+        for await (const ev of chat(uid, message, steps)) send(ev);
         controller.close();
       },
     });

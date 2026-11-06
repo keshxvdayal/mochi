@@ -35,7 +35,7 @@ export function HabitBoard({ habits, companionName }: { habits: HabitRow[]; comp
           {habits.map((h) => (
             <div key={h.id} className="group flex items-center gap-3 rounded-2xl bg-white p-3 ring-1 ring-line">
               <button
-                onClick={() => api(`/api/habits/${h.id}`, "POST").then(() => router.refresh())}
+                onClick={() => api(`/api/habits/${h.id}`, "POST", undefined, `${h.emoji} ${h.title}`).then(() => router.refresh())}
                 className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl text-xl transition active:scale-90 ${h.doneToday ? "bg-emerald-100 ring-2 ring-emerald-300" : "bg-violet-50 hover:bg-violet-100"}`}
                 title={h.doneToday ? "Done today (tap to undo)" : "Mark done today"}
               >
@@ -50,7 +50,7 @@ export function HabitBoard({ habits, companionName }: { habits: HabitRow[]; comp
                   <span key={d.date} title={d.date} className={`h-6 w-6 rounded-lg ${d.done ? "candy" : "bg-violet-100/70"}`} />
                 ))}
               </div>
-              <button onClick={() => api(`/api/items/habits/${h.id}`, "DELETE").then(() => router.refresh())} className="rounded-lg p-1.5 text-muted opacity-0 transition hover:bg-rose-50 hover:text-rose-600 group-hover:opacity-100" aria-label="Delete habit">
+              <button onClick={() => api(`/api/items/habits/${h.id}`, "DELETE", undefined, h.title).then(() => router.refresh())} className="rounded-lg p-1.5 text-muted opacity-0 transition hover:bg-rose-50 hover:text-rose-600 group-hover:opacity-100" aria-label="Delete habit">
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { boundary, live, setListening, setSpeaking } from "@/lib/companion-state";
+import { boundary, live, setListening, setSpeaking, setVoiceResting, voiceResting } from "@/lib/companion-state";
 import { stripStageDirections } from "@/lib/stage-directions";
 
 /** Text for the voice: no markdown, emoji, mood tags, links or stage directions. */
@@ -15,63 +15,36 @@ export function speakable(text: string): string {
     .trim();
 }
 
-export function voices(): SpeechSynthesisVoice[] {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return [];
-  return window.speechSynthesis.getVoices();
-}
-
-/** A friendly default: prefer natural English voices. */
-export function pickVoice(name: string): SpeechSynthesisVoice | null {
-  const all = voices();
-  if (name) {
-    const v = all.find((x) => x.name === name);
-    if (v) return v;
-  }
-  const prefs = [/samantha/i, /google uk english female/i, /google us english/i, /microsoft (aria|jenny|neerja)/i, /karen|moira|tessa|veena/i, /female/i];
-  for (const p of prefs) {
-    const v = all.find((x) => p.test(x.name) && /^en/i.test(x.lang));
-    if (v) return v;
-  }
-  return all.find((x) => /^en/i.test(x.lang)) ?? all[0] ?? null;
-}
-
-export type VoiceOpts = { voiceOn: boolean; voiceName: string; pitch: number; rate: number; voiceEngine?: "natural" | "browser"; geminiVoice?: string };
-
-let mouthTimer: ReturnType<typeof setInterval> | null = null;
-let silentTimer: ReturnType<typeof setTimeout> | null = null;
-let browserPending = 0;
-let silentUntil = 0;
-
-function startMouth(flap = true) {
-  if (flap && !mouthTimer) mouthTimer = setInterval(() => boundary(), 260);
-  setSpeaking(true);
-}
-
-function stopMouth() {
-  if (mouthTimer) clearInterval(mouthTimer);
-  if (silentTimer) clearTimeout(silentTimer);
-  mouthTimer = null;
-  silentTimer = null;
-  browserPending = 0;
-  silentUntil = 0;
-  live.audioLevel = -1;
-  setSpeaking(false);
-}
+/** voiceName/pitch/rate/voiceEngine are kept for old saved settings; only the Gemini voice is used. */
+export type VoiceOpts = { voiceOn: boolean; voiceName?: string; pitch?: number; rate?: number; voiceEngine?: "natural" | "browser"; geminiVoice?: string };
 
 /* ------------------------------------------------------------------ *
- * Natural voice (Gemini TTS) played through Web Audio, with the mouth *
- * driven by the real loudness of the audio.                           *
+ * Mochi's voice: Gemini text-to-speech only, played through Web      *
+ * Audio, with the mouth driven by the real loudness of the audio.     *
  * ------------------------------------------------------------------ */
 let ctx: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let current: AudioBufferSourceNode | null = null;
 let raf = 0;
 let generation = 0;
-const queue: { text: string; audio: Promise<AudioBuffer | null> }[] = [];
+const queue: { audio: Promise<AudioBuffer | null> }[] = [];
 let playing = false;
 let buffered = "";
 let bufferedOpts: VoiceOpts | null = null;
 let firstSent = false;
+let mouthTimer: ReturnType<typeof setTimeout> | null = null;
+/** Longest text sent in one request after the first sentence (fewer requests = the free quota lasts longer). */
+const CHUNK = 600;
+
+/**
+ * True once the person has clicked/tapped/typed on this page, so the browser
+ * lets us play sound without another tap. Navigating inside the app (e.g. right
+ * after the sign-up button) keeps this, so Mochi can speak straight away.
+ */
+export function canAutoplay(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return navigator.userActivation?.hasBeenActive ?? false;
+}
 
 /** Browsers only allow audio after a user gesture: call this from a click/tap. */
 export function unlockAudio() {
@@ -87,23 +60,54 @@ function meter() {
     analyser!.getFloatTimeDomainData(data);
     let sum = 0;
     for (const v of data) sum += v * v;
-    const rms = Math.sqrt(sum / data.length);
-    live.audioLevel = Math.min(1, rms * 5.5);
+    live.audioLevel = Math.min(1, Math.sqrt(sum / data.length) * 5.5);
     raf = requestAnimationFrame(loop);
   };
   cancelAnimationFrame(raf);
   loop();
 }
 
-function fetchAudio(text: string, opts: VoiceOpts): Promise<AudioBuffer | null> {
-  const gen = generation;
-  return fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, mood: live.mood, voice: opts.geminiVoice }) })
-    .then((r) => (r.ok ? r.arrayBuffer() : null))
-    .then((buf) => (buf && ctx && gen === generation ? ctx.decodeAudioData(buf) : null))
-    .catch(() => null);
+function stopMouth() {
+  if (mouthTimer) clearTimeout(mouthTimer);
+  mouthTimer = null;
+  live.audioLevel = -1;
+  setSpeaking(false);
 }
 
-async function pump(opts: VoiceOpts) {
+/** Muted: move the mouth for about as long as the line would take, without sound. */
+function mouthOnly(text: string) {
+  setSpeaking(true);
+  const until = Date.now() + 400 + text.length * 55;
+  const tick = () => {
+    if (Date.now() > until) return stopMouth();
+    boundary();
+    mouthTimer = setTimeout(tick, 240);
+  };
+  if (mouthTimer) clearTimeout(mouthTimer);
+  tick();
+}
+
+function fetchAudio(text: string, opts: VoiceOpts): Promise<AudioBuffer | null> {
+  const gen = generation;
+  const mood = live.mood;
+  let quota = false;
+  const once = () =>
+    fetch("/api/tts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, mood, voice: opts.geminiVoice }) })
+      .then((r) => {
+        if (r.status === 429) {
+          // Out of the free daily voice quota: rest until Google says it resets.
+          quota = true;
+          setVoiceResting(Date.now() + Number(r.headers.get("Retry-After") ?? 600) * 1000);
+        }
+        return r.ok ? r.arrayBuffer() : null;
+      })
+      .then((buf) => (buf && ctx && gen === generation ? ctx.decodeAudioData(buf) : null))
+      .catch(() => null);
+  // One retry for a passing hiccup (not for quota).
+  return once().then((b) => (b || quota || gen !== generation ? b : once()));
+}
+
+async function pump() {
   if (playing) return;
   const item = queue.shift();
   if (!item) {
@@ -113,17 +117,14 @@ async function pump(opts: VoiceOpts) {
   }
   playing = true;
   const gen = generation;
-  startMouth(false);
   const buf = await item.audio;
   if (gen !== generation) return;
   if (!buf || !ctx) {
-    // Natural voice unavailable (quota, network): say this part with the browser voice.
-    browserSay(item.text, opts, () => {
-      playing = false;
-      if (gen === generation) void pump(opts);
-    });
+    playing = false;
+    void pump();
     return;
   }
+  setSpeaking(true);
   analyser ??= Object.assign(ctx.createAnalyser(), { fftSize: 512 });
   analyser.connect(ctx.destination);
   const src = ctx.createBufferSource();
@@ -135,45 +136,16 @@ async function pump(opts: VoiceOpts) {
     current = null;
     playing = false;
     live.audioLevel = 0;
-    if (gen === generation) void pump(opts);
+    if (gen === generation) void pump();
   };
   src.start();
 }
 
-function sendNatural(text: string, opts: VoiceOpts) {
+function send(text: string, opts: VoiceOpts) {
   if (!text.trim()) return;
   unlockAudio();
-  queue.push({ text, audio: fetchAudio(text, opts) });
-  void pump(opts);
-}
-
-/* ------------------------------------------------------------------ *
- * Browser voice                                                       *
- * ------------------------------------------------------------------ */
-function browserSay(say: string, opts: VoiceOpts, onDone?: () => void) {
-  if (!("speechSynthesis" in window)) {
-    setTimeout(() => onDone?.(), 400 + say.length * 55);
-    return;
-  }
-  startMouth(true);
-  const u = new SpeechSynthesisUtterance(say);
-  const v = pickVoice(opts.voiceName);
-  if (v) u.voice = v;
-  u.pitch = opts.pitch;
-  u.rate = opts.rate;
-  u.onboundary = () => boundary();
-  const done = () => {
-    browserPending = Math.max(0, browserPending - 1);
-    if (onDone) {
-      if (mouthTimer) clearInterval(mouthTimer);
-      mouthTimer = null;
-      onDone();
-    } else if (browserPending === 0) stopMouth();
-  };
-  u.onend = done;
-  u.onerror = done;
-  browserPending++;
-  window.speechSynthesis.speak(u);
+  queue.push({ audio: fetchAudio(text, opts) });
+  void pump();
 }
 
 export function stopSpeaking() {
@@ -187,45 +159,35 @@ export function stopSpeaking() {
   } catch {}
   current = null;
   cancelAnimationFrame(raf);
-  if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
   stopMouth();
 }
 
 /**
  * Queue a chunk of speech (call once per sentence while a reply streams, then
- * flushSpeech() at the end). The natural voice sends the first sentence right
- * away and groups the rest into fewer, longer requests.
+ * flushSpeech() at the end). The first sentence is sent straight away so the
+ * voice starts quickly; the rest of the reply goes in one more request.
  */
 export function enqueueSpeech(text: string, opts: VoiceOpts) {
   const say = speakable(text);
-  if (!say) return;
-  if (!opts.voiceOn || typeof window === "undefined") {
-    startMouth(true);
-    silentUntil = Math.max(silentUntil, Date.now()) + 400 + say.length * 55;
-    if (silentTimer) clearTimeout(silentTimer);
-    silentTimer = setTimeout(stopMouth, Math.max(0, silentUntil - Date.now()));
-    return;
-  }
-  if (opts.voiceEngine === "browser") {
-    browserSay(say, opts);
-    return;
-  }
+  if (!say || typeof window === "undefined") return;
+  if (!opts.voiceOn) return mouthOnly(say);
+  if (voiceResting()) return; // the UI shows that the voice is resting
   bufferedOpts = opts;
   if (!firstSent) {
     firstSent = true;
-    sendNatural(say, opts);
+    send(say, opts);
     return;
   }
   buffered = buffered ? `${buffered} ${say}` : say;
-  if (buffered.length > 220) {
-    sendNatural(buffered, opts);
+  if (buffered.length > CHUNK) {
+    send(buffered, opts);
     buffered = "";
   }
 }
 
 /** Send whatever is still buffered (end of a reply). */
 export function flushSpeech() {
-  if (buffered && bufferedOpts) sendNatural(buffered, bufferedOpts);
+  if (buffered && bufferedOpts) send(buffered, bufferedOpts);
   buffered = "";
   firstSent = false;
 }

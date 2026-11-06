@@ -46,7 +46,7 @@ export function TaskBoard({ tasks, goals, today, companionName, children }: { ta
   }
 
   async function patch(t: Task, body: Partial<Task>) {
-    const r = await api<{ xpGained: number }>(`/api/items/tasks/${t.id}`, "PATCH", body);
+    const r = await api<{ xpGained: number }>(`/api/items/tasks/${t.id}`, "PATCH", body, t.title);
     if (r.xpGained > 0) {
       setToast(`+${r.xpGained} XP! ${t.kind === "challenge" ? "Challenge crushed! 🏆" : "Nice work! ✨"}`);
       setTimeout(() => setToast(null), 2200);
@@ -55,7 +55,7 @@ export function TaskBoard({ tasks, goals, today, companionName, children }: { ta
   }
 
   async function remove(t: Task) {
-    await api(`/api/items/tasks/${t.id}`, "DELETE");
+    await api(`/api/items/tasks/${t.id}`, "DELETE", undefined, t.title);
     router.refresh();
   }
 
@@ -141,7 +141,7 @@ export function TaskBoard({ tasks, goals, today, companionName, children }: { ta
             <div className="space-y-2">
               {challenges.length ? challenges.map(row) : <p className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-900">No active challenges.</p>}
             </div>
-            <Link href={`/?ask=${encodeURIComponent("Give me a tough but fun 7-day challenge based on my goals")}`} className={`${btn.soft} mt-4 w-full`}>
+            <Link href={`/home?ask=${encodeURIComponent("Give me a tough but fun 7-day challenge based on my goals")}`} className={`${btn.soft} mt-4 w-full`}>
               <Sparkles className="h-4 w-4 text-violet-500" /> Ask for a challenge
             </Link>
           </Card>

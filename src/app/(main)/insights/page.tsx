@@ -41,7 +41,7 @@ export default async function InsightsPage() {
 
   return (
     <div>
-      <Title emoji="✨" title="Insights" subtitle="How your week is really going." action={<Link href={`/?ask=${encodeURIComponent("Be honest: what am I doing right and what am I doing wrong lately? Give me 3 fixes.")}`} className={btn.candy}><Sparkles className="h-4 w-4" /> Honest review from {db.companion.name}</Link>} />
+      <Title emoji="✨" title="Insights" subtitle="How your week is really going." action={<Link href={`/home?ask=${encodeURIComponent("Be honest: what am I doing right and what am I doing wrong lately? Give me 3 fixes.")}`} className={btn.candy}><Sparkles className="h-4 w-4" /> Honest review from {db.companion.name}</Link>} />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[

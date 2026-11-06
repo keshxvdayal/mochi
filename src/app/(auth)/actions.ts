@@ -22,7 +22,7 @@ const SignIn = z.object({
 /** Only same-site paths, so `?next=` can't send people to another website. */
 function safeNext(next: FormDataEntryValue | null): string {
   const n = typeof next === "string" ? next : "";
-  return n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/\\") ? n : "/";
+  return n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/\\") ? n : "/home";
 }
 
 /** Turns a server failure into a message, instead of a 500 that crashes the page. */

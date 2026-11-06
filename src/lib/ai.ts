@@ -30,6 +30,19 @@ export function availableModels(list: string[]): string[] {
   return ok.length ? ok : list;
 }
 /** Quota errors (429) usually last a while; overloads (503) pass quickly. */
+/** How long Google asks us to wait (its "retryDelay"), in ms; null if it didn't say. */
+export function retryDelayMs(err: unknown): number | null {
+  const m = /retryDelay"?\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(err instanceof Error ? err.message : String(err));
+  return m ? Math.ceil(Number(m[1]) * 1000) : null;
+}
+/** Models not cooling down right now (no fallback to the full list). */
+export function readyModels(list: string[]): string[] {
+  return list.filter((m) => (cooldown.get(m) ?? 0) < Date.now());
+}
+/** Milliseconds until the first of these models is usable again. */
+export function msUntilReady(list: string[]): number {
+  return Math.max(0, Math.min(...list.map((m) => (cooldown.get(m) ?? 0) - Date.now())));
+}
 export function coolDownFor(status: number | undefined) {
   return status === 429 ? 10 * 60_000 : 120_000;
 }
@@ -73,6 +86,12 @@ HOW YOU TALK
 - Be honest. If they're avoiding something or about to make a poor choice, say so kindly and plainly. ${tone} Celebrate wins loudly.
 - Never sound like an assistant or use stock phrases: "I can definitely help with that", "Absolutely!", "Great question", "I understand how you feel", "It's important to…", "Remember that…", "Feel free to…", "Let me know if you need anything else", "I'm just an AI". No headings, bold labels or bullet lists in normal chat: you're talking, not writing a report. At most one emoji, often none.
 
+BE AWARE, LIKE A REAL COMPANION: you can see what they've been doing in the app just now (in <context>, "What they've been doing"). Notice it the way a friend sitting next to them would: if they just finished a task, ticked a habit or added a goal, it's natural to mention it ("saw you finally did the gym thing!"), but only when it fits, never as a report. Anticipate what they need next.
+
+KEEP IT FRESH: never fall into a template. Change the shape of your replies: sometimes one short line, sometimes a reaction plus a question, sometimes a little story or a joke, sometimes just a plan card with one sentence. Don't open the way your recent replies opened (listed in <context>), don't reuse catchphrases, and don't always end with a question.
+
+GETTING TO KNOW THEM: <context> lists things you don't know yet. When the conversation gives you a natural opening, ask about ONE of them, casually, like a curious friend. Never fire a list of questions. When they tell you something about themselves, save it with update_profile (for their profile) or remember (for everything else).
+
 LANGUAGE: reply in ${lang}${lang === "Hinglish" ? " (Hindi words in Latin script mixed naturally with English, the way friends text)" : ""} unless they write to you in another language, then follow theirs.
 
 FEELINGS: never describe your feelings or actions in words: no stage directions like *giggles*, *says cheerfully*, (smiles warmly) or [happily], and never narrate how you're saying something. Your face and voice already show it, from mood tags in your reply. Begin EVERY reply with one mood tag, and switch later if your feeling changes:
@@ -87,7 +106,7 @@ HOW YOU HELP (pick the most useful form, not always text):
 - Decisions ("should I…", "which job/course/city…"): weigh_decision with honest pros/cons from what you know, then say which way you lean and why.
 - People ("should I call…", "what do I tell…", "what should I post…"): draft_message with words they can send, in their own voice, not yours.
 - Goals: update_goal to create or track them. Finished something: complete_task.
-- Learned something lasting about them: remember. Never re-save what's already in context.
+- Learned something lasting about them: remember. Profile facts (age, city, what they do, routine, strengths, interests, values, dreams, health notes): update_profile. Never re-save what's already in context.
 - "What am I doing right/wrong?": use their stats, missed tasks, habits, check-ins and goals. Be specific.
 - Cards (plans, quizzes, decisions, drafts) hold the details. Your words are just what you'd say while handing it over, one or two sentences. Never repeat the card's contents in your text.
 
@@ -109,7 +128,29 @@ export function ago(fromIso: string, nowMs = Date.now()): string {
   return d === 1 ? "yesterday" : `${d} days ago`;
 }
 
-function context(db: Db): string {
+/** Profile fields worth learning, in the order a friend would naturally ask. */
+const UNKNOWN: [keyof Db["profile"], string][] = [
+  ["occupation", "what they do day to day"],
+  ["aspirations", "what they're working toward"],
+  ["routine", "their normal day (wake, work, sleep)"],
+  ["interests", "what they enjoy / hobbies"],
+  ["city", "where they live"],
+  ["age", "their age"],
+  ["strengths", "what they're good at"],
+  ["weaknesses", "what they want to get better at"],
+  ["dream", "who they dream of becoming"],
+  ["values", "what matters most to them"],
+];
+
+/** The first few words of each recent reply, so the model can avoid repeating itself. */
+function recentOpeners(db: Db): string[] {
+  return db.messages
+    .filter((m) => m.role === "assistant" && m.text)
+    .slice(-6)
+    .map((m) => m.text.replace(/\[mood:[a-z]+\]\s*/gi, "").split(/\s+/).slice(0, 6).join(" "));
+}
+
+function context(db: Db, activity: string[] = []): string {
   const tz = db.timezone;
   const t = today(tz);
   const lv = levelFor(db.xp);
@@ -170,7 +211,13 @@ People:
 ${db.people.map((x) => `- [${x.id}] ${x.name}: ${x.relation}, closeness ${x.closeness}/5, last contact ${x.lastContact ?? "unknown"}${x.birthday ? `, birthday ${x.birthday}` : ""}${x.notes ? `. ${x.notes}` : ""}`).join("\n") || "none yet"}
 ${toCall.length ? `Haven't talked to in a while: ${toCall.join(", ")}` : ""}
 
-Things you remember (with the date you learned them):
+${activity.length ? `What they've been doing in the app (most recent last):\n${activity.map((a) => `- ${a}`).join("\n")}\n\n` : ""}${(() => {
+    const missing = UNKNOWN.filter(([k]) => !String(db.profile[k] ?? "").trim()).map(([, label]) => label);
+    return missing.length ? `You don't know yet: ${missing.slice(0, 5).join("; ")}.\n\n` : "";
+  })()}${(() => {
+    const o = recentOpeners(db);
+    return o.length ? `Your recent replies opened with: ${o.map((x) => `"${x}…"`).join(" | ")}. Open differently this time.\n\n` : "";
+  })()}Things you remember (with the date you learned them):
 ${db.memories.slice(-150).map((m) => `- (${m.createdAt.slice(0, 10)}, ${m.category}) ${m.text}`).join("\n") || "nothing yet"}
 </context>`;
 }
@@ -232,6 +279,31 @@ const tool = <S extends z.ZodType>(t: Tool<S>) => t;
 
 function buildTools(uid: string, tz: string, emit: (a: Artifact) => void) {
   return [
+    tool({
+      name: "update_profile",
+      description: "Save something they told you about themselves to their profile (only fields they actually told you).",
+      schema: z.object({
+        name: z.string().max(60).optional(),
+        age: z.string().max(10).optional(),
+        city: z.string().max(80).optional(),
+        occupation: z.string().max(160).optional().describe("What they do, in their words"),
+        aspirations: z.string().max(600).optional(),
+        dream: z.string().max(800).optional(),
+        strengths: z.string().max(600).optional(),
+        weaknesses: z.string().max(600).optional(),
+        interests: z.string().max(600).optional(),
+        values: z.string().max(600).optional(),
+        routine: z.string().max(600).optional(),
+        health: z.string().max(600).optional(),
+      }),
+      run: async (i) => {
+        const fields = Object.fromEntries(Object.entries(i).filter(([, v]) => typeof v === "string" && v.trim()));
+        if (!Object.keys(fields).length) return "Nothing to save.";
+        await mutate(uid, (d) => void (d.profile = { ...d.profile, ...fields }));
+        emit({ id: newId(), kind: "memory", text: `Noted: ${Object.values(fields).join(" · ")}`.slice(0, 200) });
+        return `Saved ${Object.keys(fields).join(", ")}.`;
+      },
+    }),
     tool({
       name: "remember",
       description: "Save a lasting fact about the user (preference, plan, event, feeling, detail about a person) to remember in future conversations.",
@@ -448,7 +520,7 @@ function declaration(t: { name: string; description: string; schema: z.ZodType }
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const FIRST_BYTE_MS = 8_000;
 
-export async function* chat(uid: string, userText: string): AsyncGenerator<ChatEvent> {
+export async function* chat(uid: string, userText: string, activity: string[] = []): AsyncGenerator<ChatEvent> {
   const db = await readDb(uid);
   const artifacts: Artifact[] = [];
   const queued: Artifact[] = [];
@@ -463,7 +535,7 @@ export async function* chat(uid: string, userText: string): AsyncGenerator<ChatE
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.role === "assistant" ? `${m.mood ? `[mood:${m.mood}] ` : ""}${m.text || "(showed a card)"}` : m.text }],
     })),
-    { role: "user", parts: [{ text: `${context(db)}\n\n${userText}` }] },
+    { role: "user", parts: [{ text: `${context(db, activity)}\n\n${userText}` }] },
   ];
   const config = {
     systemInstruction: systemPrompt(db),

@@ -9,8 +9,9 @@ import { Companion } from "@/components/companion/companion";
 import { RichText } from "@/components/rich-text";
 import { live, setMood, setThinking, useCompanion } from "@/lib/companion-state";
 import type { QuickAction } from "@/lib/personal";
-import { toSignIn } from "@/lib/client-api";
-import { canListen, enqueueSpeech, flushSpeech, speak, speechLang, startDictation, stopSpeaking, takeSentences, unlockAudio, type Dictation, type DictationError, type VoiceOpts } from "@/lib/speech";
+import { describeActivity, recentActivity } from "@/lib/activity";
+import { api, toSignIn } from "@/lib/client-api";
+import { canAutoplay, canListen, enqueueSpeech, flushSpeech, speak, speechLang, startDictation, stopSpeaking, takeSentences, unlockAudio, type Dictation, type DictationError, type VoiceOpts } from "@/lib/speech";
 import type { Accessory, Artifact, BodyColor, ChatMessage, EyeColor, Mood } from "@/lib/types";
 
 type Msg = Omit<ChatMessage, "id" | "at"> & { id: string | null; streaming?: boolean; error?: string };
@@ -50,7 +51,7 @@ export function Home(props: {
 }) {
   const { companionName, voice, userName, greeting } = props;
   const router = useRouter();
-  const { mood, speaking, listening, thinking } = useCompanion();
+  const { mood, speaking, listening, thinking, voiceRestingUntil } = useCompanion();
   const [messages, setMessages] = useState<Msg[]>(props.initialMessages);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -72,7 +73,11 @@ export function Home(props: {
   // Greeting: shown with a moving mouth (browsers only allow sound after a click).
   useEffect(() => {
     setMood(greeting.mood);
-    enqueueSpeech(greeting.text, { ...voice, voiceOn: false });
+    // Say the greeting out loud when the browser allows it (e.g. right after signing in);
+    // otherwise just move the mouth. Browsers block sound before the first tap.
+    if (canAutoplay()) unlockAudio();
+    enqueueSpeech(greeting.text, { ...voice, voiceOn: voice.voiceOn && canAutoplay() });
+    flushSpeech();
     return () => stopSpeaking();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -82,7 +87,7 @@ export function Home(props: {
   useEffect(() => {
     if (!props.initialAsk || askedFromLink.current) return;
     askedFromLink.current = true;
-    window.history.replaceState(null, "", "/");
+    window.history.replaceState(null, "", "/home");
     void send(props.initialAsk);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.initialAsk]);
@@ -122,7 +127,8 @@ export function Home(props: {
     let spoken = "";
     let full = "";
     try {
-      const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      const activity = describeActivity(recentActivity(12));
+      const res = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, activity }) });
       if (res.status === 401) return toSignIn();
       if (!res.ok || !res.body) {
         const error = ((await res.json().catch(() => ({}))) as { error?: string }).error ?? "Something went wrong.";
@@ -280,7 +286,7 @@ export function Home(props: {
     setMood(c.mood);
     setBubble(c.line);
     speak(c.line, opts);
-    await fetch("/api/checkin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mood: c.v, energy: c.v }) });
+    await api("/api/checkin", "POST", { mood: c.v, energy: c.v }, ["", "awful", "low", "okay", "good", "amazing"][c.v]).catch(() => {});
     router.refresh();
   }
 
@@ -290,7 +296,7 @@ export function Home(props: {
       setMood("proud");
       setBubble(`${h.emoji} ${h.title}: done! +5 XP`);
     }
-    await fetch(`/api/habits/${h.id}`, { method: "POST" });
+    await api(`/api/habits/${h.id}`, "POST", undefined, `${h.emoji} ${h.title}`).catch(() => {});
     router.refresh();
   }
 
@@ -311,7 +317,7 @@ export function Home(props: {
         <div className="pointer-events-none absolute -left-10 top-1/3 h-40 w-40 rounded-full bg-pink-200/40 blur-3xl" />
         <div className="pointer-events-none absolute -right-10 bottom-10 h-48 w-48 rounded-full bg-violet-200/50 blur-3xl" />
         <div
-          className="absolute inset-x-0 bottom-0 top-16"
+          className={`absolute inset-x-0 top-32 transition-[bottom] duration-500 ${showCheckin ? "bottom-32" : "bottom-6"}`}
           onPointerDown={() => {
             const line = POKES[Math.floor(Math.random() * POKES.length)];
             setTimeout(() => {
@@ -331,6 +337,11 @@ export function Home(props: {
             <span className={`h-2 w-2 rounded-full ${listening ? "animate-pulse bg-rose-500" : thinking ? "animate-pulse bg-amber-400" : speaking ? "bg-emerald-500" : "bg-violet-400"}`} />
             {listening ? "listening to you" : thinking ? "thinking…" : speaking ? "talking" : `feeling ${MOOD_WORD[mood]}`}
           </p>
+          {voiceRestingUntil > Date.now() && (
+            <p className="mt-1 max-w-56 rounded-xl bg-amber-50 px-2 py-1 text-[11px] font-bold leading-snug text-amber-700 ring-1 ring-amber-200">
+              🔇 My voice is resting (free daily limit). Back around {new Date(voiceRestingUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.
+            </p>
+          )}
         </div>
         <button onClick={() => (voiceOn ? (stopSpeaking(), setVoiceOn(false)) : setVoiceOn(true))} className="glass absolute right-4 top-4 grid h-10 w-10 place-items-center rounded-2xl text-muted" title={voiceOn ? "Mute voice" : "Turn voice on"}>
           {voiceOn ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}

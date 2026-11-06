@@ -31,7 +31,7 @@ export function GoalBoard({ goals, taskCounts, companionName }: { goals: Goal[];
     router.refresh();
   }
   const patch = async (g: Goal, body: Partial<Goal>) => {
-    await api(`/api/items/goals/${g.id}`, "PATCH", body);
+    await api(`/api/items/goals/${g.id}`, "PATCH", body, g.title);
     router.refresh();
   };
 
@@ -65,7 +65,7 @@ export function GoalBoard({ goals, taskCounts, companionName }: { goals: Goal[];
 
       {active.length === 0 && !adding && (
         <Empty emoji="🌟" title="No goals yet">
-          Add one, or <Link className="font-bold text-grape" href={`/?ask=${encodeURIComponent("Help me set 3 meaningful goals for the next 6 months")}`}>ask {companionName} to help you pick</Link>.
+          Add one, or <Link className="font-bold text-grape" href={`/home?ask=${encodeURIComponent("Help me set 3 meaningful goals for the next 6 months")}`}>ask {companionName} to help you pick</Link>.
         </Empty>
       )}
 
@@ -78,7 +78,7 @@ export function GoalBoard({ goals, taskCounts, companionName }: { goals: Goal[];
                 <h3 className="mt-1 text-lg font-extrabold leading-snug">{g.title}</h3>
                 {g.why && <p className="mt-0.5 text-sm text-muted">{g.why}</p>}
               </div>
-              <button onClick={() => confirm("Delete this goal?") && api(`/api/items/goals/${g.id}`, "DELETE").then(() => router.refresh())} className="rounded-lg p-1.5 text-muted hover:bg-rose-50 hover:text-rose-600" aria-label="Delete goal">
+              <button onClick={() => confirm("Delete this goal?") && api(`/api/items/goals/${g.id}`, "DELETE", undefined, g.title).then(() => router.refresh())} className="rounded-lg p-1.5 text-muted hover:bg-rose-50 hover:text-rose-600" aria-label="Delete goal">
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>
@@ -113,7 +113,7 @@ export function GoalBoard({ goals, taskCounts, companionName }: { goals: Goal[];
                 <input className="w-full rounded-xl bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted/60 focus:bg-white" value={newMilestone[g.id] ?? ""} onChange={(e) => setNewMilestone({ ...newMilestone, [g.id]: e.target.value })} placeholder="+ Add a milestone" />
               </form>
             </div>
-            <Link href={`/?ask=${encodeURIComponent(`Break my goal "${g.title}" into a plan with weekly tasks`)}`} className={`${btn.soft} mt-4 w-full`}>
+            <Link href={`/home?ask=${encodeURIComponent(`Break my goal "${g.title}" into a plan with weekly tasks`)}`} className={`${btn.soft} mt-4 w-full`}>
               <Sparkles className="h-4 w-4 text-violet-500" /> Make a plan with {companionName}
             </Link>
           </Card>

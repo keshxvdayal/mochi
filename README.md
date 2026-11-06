@@ -1,6 +1,6 @@
-# Mochi: a 3D companion for everyone
+# Mochi: an animated companion for everyone
 
-A cute 3D companion that lives on your screen, gets to know your life, and helps with it. It works for students, working people, business owners, job seekers, parents, homemakers and retirees. It talks out loud with a natural, mood-matched voice and lip-sync, and shows how it feels.
+A cute animated companion that lives on your screen, gets to know your life, and helps with it. It works for students, working people, business owners, job seekers, parents, homemakers and retirees. It talks out loud with a natural, mood-matched voice and lip-sync, and shows how it feels.
 
 ## Run it
 
@@ -10,7 +10,7 @@ npm install
 npm run dev                   # http://localhost:3000
 ```
 
-Everyone signs up with an email and password and gets their own companion. The first visit walks you through designing it (name, colour, eyes, accessory) and telling it about yourself: life stage, what you do, what you want help with, your dreams, your routine, and the language it should talk in. Each account's data is private to it; locally it lives in `data/`, apart from what is sent to Gemini for each reply.
+Everyone signs up with an email and password and gets their own companion. Visitors land on a page explaining Mochi, with Sign in / Sign up in the navbar. After signing up, Mochi gets to know you in a chat: it asks your name, a name and colour for itself, your life stage, what you do, what you want help with, what you're working toward, your routine and your language, one question at a time, and reacts to each answer. Each account's data is private to it; locally it lives in `data/`, apart from what is sent to Gemini for each reply.
 
 ## Deploy on Vercel
 
@@ -35,7 +35,8 @@ In the chat, replies can include cards: quiz games, day plans (timeline), new ta
 
 ## How it works
 
-- **The character** (`src/components/companion/mochi-model.tsx`) is built in code with three.js / React Three Fiber; no downloaded model. Detailed textured eyes with lashes, a plush fur rim, two-part ears with floppy tips, a sprout flower that blooms when happy and wilts when sad, paw pads and toe beans, anime blush lines, six accessories, and a cushion stage. Twelve moods each set a pose (smile, eye shape, brows, blush, ears, arms, bloom, tilt, bounce) that the face eases into every frame, plus mood effects (hearts, tears, anger mark, sparkles, Z's, thought dots). It blinks, follows your cursor, breathes, and does idle things on its own (looks around, twitches ears, hops, stretches, spins).
+- **The character** (`src/components/character/mochi.tsx`) is drawn in SVG and animated with CSS plus one small animation loop, so it runs smoothly on any phone (no WebGL). Twelve moods each set a pose: eyes (stars, hearts, winks, sleepy arcs…), brows, mouth, blush, ears, arms, a sprout flower that blooms or wilts, a body motion and an effect (hearts, tears, anger mark, sparkles, Zzz, thought bubble, music notes). It blinks, follows your cursor, lip-syncs to the voice, hops, and has six accessories.
+- **The buddy** (`src/components/buddy.tsx`): a small Mochi hops along the bottom of every page, notices what you do (pages, tasks, habits, goals, people, settings; `src/lib/activity.ts`), reacts in a bubble and out loud for the big moments, and notices when you go quiet or come back. The chat gets your recent steps, so replies know what you just did.
 - **Voice**: the natural voice is Gemini text-to-speech with a style cue from the current mood (`src/lib/tts.ts`). The browser plays it through Web Audio and drives the mouth from the real loudness of the audio. The first sentence is sent as soon as it is written; the rest in larger chunks. If the natural voice is unavailable (quota, network) it falls back to the browser's voice for that part. "Instant voice" uses the browser voice only, with mouth movement from word boundaries.
 - **Talking to it**: hold the mic button (or hold Space on it), speak, and let go to send. Words appear as you speak, pauses don't cut you off, sliding away cancels, and it listens in the language you chose. Uses the browser's speech recognition (Chrome, Edge, Safari).
 - **The brain** (`src/lib/ai.ts`): Gemini with tools (`remember`, `add_task`, `complete_task`, `add_habit`, `check_habit`, `plan_day`, `create_quiz`, `update_goal`, `update_person`, `draft_message`, `weigh_decision`). Tool inputs are validated with zod before they run. Each turn gets your profile, life stage, focus areas, habits, goals, open tasks, people, recent check-ins, week stats, dated memories, and how long you've known each other and since you last talked. The prompt asks it to talk like a friend rather than an assistant: mirror your length and energy, use what it knows without reciting it, follow up on things you mentioned, and skip stock phrases. Replies start with a `[mood:…]` tag that drives the face.

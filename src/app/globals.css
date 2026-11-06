@@ -61,3 +61,58 @@ body {
 .prose-chat ol { list-style: decimal; }
 .prose-chat strong { font-weight: 700; }
 .prose-chat h3 { font-weight: 700; margin-top: 0.5rem; }
+
+/* ---------------------------- Mochi character ---------------------------- */
+.mochi-svg * { transform-box: view-box; }
+.mochi-motion { transform-origin: 120px 222px; }
+.mochi-m-breathe { animation: mochi-breathe 3.2s ease-in-out infinite; }
+.mochi-m-sway { animation: mochi-sway 2.6s ease-in-out infinite; }
+.mochi-m-bounce { animation: mochi-bounce 0.55s ease-in-out infinite; }
+.mochi-m-sink { animation: mochi-sink 4s ease-in-out infinite; }
+.mochi-m-shake { animation: mochi-shake 0.35s linear infinite; }
+.mochi-m-nod { animation: mochi-nod 1.4s ease-in-out infinite; }
+.mochi-m-float { animation: mochi-float-body 3s ease-in-out infinite; }
+ellipse.mochi-shadow { transform-origin: 120px 232px; animation: none; }
+ellipse.mochi-shadow.mochi-m-bounce { animation: mochi-shadow 0.55s ease-in-out infinite; }
+
+@keyframes mochi-breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.025, 0.975); } }
+@keyframes mochi-sway { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg) translateY(-2px); } }
+@keyframes mochi-bounce { 0%, 100% { transform: translateY(0) scale(1.04, 0.96); } 50% { transform: translateY(-14px) scale(0.97, 1.03); } }
+@keyframes mochi-shadow { 0%, 100% { transform: scale(1); opacity: .16; } 50% { transform: scale(.8); opacity: .08; } }
+@keyframes mochi-sink { 0%, 100% { transform: translateY(2px) scale(1.02, 0.97); } 50% { transform: translateY(5px) scale(1.03, 0.95); } }
+@keyframes mochi-shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-2.5px) rotate(-1deg); } 75% { transform: translateX(2.5px) rotate(1deg); } }
+@keyframes mochi-nod { 0%, 100% { transform: rotate(0); } 30% { transform: rotate(-4deg) translateY(-3px); } 60% { transform: rotate(2deg); } }
+@keyframes mochi-float-body { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+
+.mochi-hopper { transform-origin: 120px 222px; }
+.mochi-hop { animation: mochi-hop 0.7s cubic-bezier(.3,.7,.4,1); }
+.mochi-squish { animation: mochi-squish 0.5s cubic-bezier(.3,1.6,.5,1); }
+@keyframes mochi-hop { 0% { transform: scale(1.1, 0.9); } 35% { transform: translateY(-30px) scale(0.94, 1.08); } 70% { transform: translateY(0) scale(1.1, 0.9); } 100% { transform: scale(1); } }
+@keyframes mochi-squish { 0% { transform: scale(1.18, 0.82); } 50% { transform: scale(0.94, 1.08); } 100% { transform: scale(1); } }
+
+.mochi-wave { animation: mochi-wave 0.9s ease-in-out infinite; }
+@keyframes mochi-wave { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-22deg); } }
+.mochi-ear-perk { animation: mochi-ear 0.6s ease-in-out infinite alternate; }
+@keyframes mochi-ear { to { translate: 0 -3px; } }
+
+.mochi-float { animation: mochi-float-up 2.4s ease-out infinite; }
+@keyframes mochi-float-up { 0% { transform: translateY(8px) scale(.6); opacity: 0; } 20% { opacity: 1; } 100% { transform: translateY(-34px) scale(1.1); opacity: 0; } }
+.mochi-tear { animation: mochi-tear 1.8s ease-in infinite; }
+@keyframes mochi-tear { 0% { transform: translateY(0); opacity: 0; } 15% { opacity: 1; } 100% { transform: translateY(30px); opacity: 0; } }
+.mochi-zzz { animation: mochi-zzz 2.4s ease-out infinite; }
+@keyframes mochi-zzz { 0% { transform: translate(0, 6px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translate(10px, -16px); opacity: 0; } }
+.mochi-twinkle { animation: mochi-twinkle 1.4s ease-in-out infinite; }
+@keyframes mochi-twinkle { 0%, 100% { transform: scale(.5) rotate(0); opacity: .4; } 50% { transform: scale(1.1) rotate(20deg); opacity: 1; } }
+.mochi-pulse { animation: mochi-pulse 0.9s ease-in-out infinite; }
+@keyframes mochi-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.12); } }
+.mochi-dot { animation: mochi-dot 1.1s ease-in-out infinite; }
+@keyframes mochi-dot { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+.mochi-sound { animation: mochi-dot 0.8s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .mochi-svg *, .mochi-hopper, .mochi-motion { animation: none !important; }
+}
+
+/* floating buddy */
+.buddy-hop { animation: buddy-hop 0.6s cubic-bezier(.3,.7,.4,1); }
+@keyframes buddy-hop { 0% { transform: scale(1.12, .88); } 40% { transform: translateY(-26px) scale(.94, 1.08); } 75% { transform: translateY(0) scale(1.08, .92); } 100% { transform: none; } }

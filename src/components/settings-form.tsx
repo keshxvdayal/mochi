@@ -1,32 +1,14 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { Check, Play, Save } from "lucide-react";
 import { Companion } from "@/components/companion/companion";
 import { btn, Card, field, Title } from "@/components/ui";
 import { api } from "@/lib/client-api";
 import { setMood } from "@/lib/companion-state";
-import { speak, unlockAudio, voices } from "@/lib/speech";
+import { speak, unlockAudio } from "@/lib/speech";
 import { ACCESSORIES, BODY_COLORS, EYE_COLORS, GEMINI_VOICES, MOODS, type Accessory, type BodyColor, type CompanionSettings, type EyeColor } from "@/lib/types";
-
-function subscribeVoices(cb: () => void) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return () => {};
-  window.speechSynthesis.addEventListener("voiceschanged", cb);
-  return () => window.speechSynthesis.removeEventListener("voiceschanged", cb);
-}
-let voiceKey = "";
-let voiceCache: { name: string; lang: string }[] = [];
-function voiceSnapshot() {
-  const v = voices().filter((x) => /^en|^hi/i.test(x.lang));
-  const key = v.map((x) => x.name).join("|");
-  if (key !== voiceKey) {
-    voiceKey = key;
-    voiceCache = v.map((x) => ({ name: x.name, lang: x.lang }));
-  }
-  return voiceCache;
-}
-const noVoices: { name: string; lang: string }[] = [];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -43,7 +25,6 @@ export function SettingsForm({ companion }: { companion: CompanionSettings }) {
   const router = useRouter();
   const [c, setC] = useState(companion);
   const [saved, setSaved] = useState(false);
-  const list = useSyncExternalStore(subscribeVoices, voiceSnapshot, () => noVoices);
   useEffect(() => {
     setMood("happy");
   }, []);
@@ -131,44 +112,16 @@ export function SettingsForm({ companion }: { companion: CompanionSettings }) {
               <span className="text-sm font-extrabold">Speak out loud</span>
               <input type="checkbox" checked={c.voiceOn} onChange={(e) => setC({ ...c, voiceOn: e.target.checked })} className="h-5 w-5 accent-violet-500" />
             </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button onClick={() => setC({ ...c, voiceEngine: "natural" })} className={`text-left ${pick(c.voiceEngine === "natural")} p-3`}>
-                <p className="text-sm font-extrabold">✨ Natural voice</p>
-                <p className="text-xs font-semibold text-muted">Expressive, changes with mood</p>
-              </button>
-              <button onClick={() => setC({ ...c, voiceEngine: "browser" })} className={`text-left ${pick(c.voiceEngine === "browser")} p-3`}>
-                <p className="text-sm font-extrabold">⚡ Instant voice</p>
-                <p className="text-xs font-semibold text-muted">Built into your browser, no delay</p>
-              </button>
-            </div>
-            {c.voiceEngine === "natural" ? (
+            <div>
+              <p className="mb-2 text-xs font-semibold text-muted">Voice (Gemini, changes with {c.name}&apos;s mood)</p>
               <div className="flex flex-wrap gap-1.5">
                 {Object.entries(GEMINI_VOICES).map(([name, vibe]) => (
-                  <button key={name} onClick={() => setC({ ...c, geminiVoice: name })} className={`rounded-full px-3 py-1.5 text-xs font-bold ring-2 transition ${c.geminiVoice === name ? "bg-white ring-violet-400" : "bg-white/60 ring-transparent hover:ring-violet-200"}`}>
+                  <button key={name} onClick={() => setC({ ...c, geminiVoice: name, voiceEngine: "natural" })} className={`rounded-full px-3 py-1.5 text-xs font-bold ring-2 transition ${c.geminiVoice === name ? "bg-white ring-violet-400" : "bg-white/60 ring-transparent hover:ring-violet-200"}`}>
                     {name} <span className="font-semibold text-muted">· {vibe}</span>
                   </button>
                 ))}
               </div>
-            ) : (
-              <>
-                <select className={field} value={c.voiceName} onChange={(e) => setC({ ...c, voiceName: e.target.value })}>
-                  <option value="">Automatic (cutest available)</option>
-                  {list.map((v) => (
-                    <option key={v.name} value={v.name}>
-                      {v.name} ({v.lang})
-                    </option>
-                  ))}
-                </select>
-                <label className="block text-sm font-bold">
-                  Pitch {c.pitch.toFixed(2)}
-                  <input type="range" min={0.5} max={2} step={0.05} value={c.pitch} onChange={(e) => setC({ ...c, pitch: Number(e.target.value) })} className="w-full accent-violet-500" />
-                </label>
-                <label className="block text-sm font-bold">
-                  Speed {c.rate.toFixed(2)}
-                  <input type="range" min={0.5} max={1.6} step={0.05} value={c.rate} onChange={(e) => setC({ ...c, rate: Number(e.target.value) })} className="w-full accent-violet-500" />
-                </label>
-              </>
-            )}
+            </div>
             <button onClick={test} className={btn.soft}>
               <Play className="h-4 w-4" /> Test voice
             </button>
